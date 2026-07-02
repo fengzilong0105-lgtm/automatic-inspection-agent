@@ -9,20 +9,20 @@ def test_wrap_command_without_elevation():
 
 def test_wrap_command_with_sudo_su_and_password():
     ssh = SSHConfig(
-        host="10.144.20.61",
-        user="wanji",
-        password="wj@94112",
+        host="192.168.1.10",
+        user="deploy",
+        password="ssh-password",
         use_sudo_su=True,
     )
     wrapped = wrap_command_for_host("whoami", ssh)
-    assert wrapped.startswith("printf '%s\\n' 'wj@94112' | sudo -S su - root -c ")
+    assert wrapped.startswith("printf '%s\\n' 'ssh-password' | sudo -S su - root -c ")
     assert wrapped.endswith("'whoami'")
 
 
 def test_wrap_command_with_separate_sudo_password():
     ssh = SSHConfig(
-        host="10.144.20.61",
-        user="wanji",
+        host="192.168.1.10",
+        user="deploy",
         password="ssh-pass",
         use_sudo_su=True,
         sudo_password="sudo-pass",

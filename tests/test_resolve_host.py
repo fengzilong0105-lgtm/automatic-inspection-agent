@@ -7,23 +7,23 @@ def test_resolve_host_id_by_partial_match(tmp_path):
         """
 setup_completed: true
 hosts:
-  - id: 公司229服务器
-    name: prod
+  - id: prod-east
+    name: prod-east
     ssh:
-      host: 10.102.1.229
+      host: 192.168.10.229
       port: 22
       user: root
-  - id: 纳黔现场
-    name: nq
+  - id: prod-west
+    name: prod-west
     ssh:
-      host: 10.144.20.61
+      host: 192.168.20.61
       port: 22
-      user: wanji
+      user: deploy
 services: []
 """,
         encoding="utf-8",
     )
     settings = Settings(config_path=config_path)
-    assert settings.resolve_host_id("229") == "公司229服务器"
-    assert settings.resolve_host_id("10.144.20.61") == "纳黔现场"
-    assert settings.resolve_host_id("公司229服务器") == "公司229服务器"
+    assert settings.resolve_host_id("229") == "prod-east"
+    assert settings.resolve_host_id("192.168.20.61") == "prod-west"
+    assert settings.resolve_host_id("prod-east") == "prod-east"

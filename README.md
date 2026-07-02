@@ -297,6 +297,26 @@ curl -X POST http://localhost:8765/api/inspection/run
 - `agent/langchain/` — LangChain 对话与诊断
 - `agent/remediation/orchestrator.py` — 写操作（重启）
 
+## 发布到 GitHub（纯净版说明）
+
+仓库**不会也不应**包含你的现场配置与密钥：
+
+| 路径 | 是否提交 Git | 说明 |
+|------|----------------|------|
+| `data/config.yaml` | **否**（`.gitignore`） | 主机 IP、SSH 密码、服务列表等，仅在本机 `data/` 生成 |
+| `data/agent.db` | **否** | 本地告警 SQLite |
+| `config.yaml.example` | **是** | 示例模板，无真实密码 |
+| `installers/python-3.12.10-amd64.exe` | **是** | 离线 Python 安装包 |
+
+克隆仓库后首次启动会进入 **Web 初始化向导**，在页面里配置 SSH 与 LLM 即可；也可参考示例：
+
+```powershell
+copy config.yaml.example data\config.yaml
+# 编辑 data\config.yaml 填入真实信息（勿提交到 Git）
+```
+
+**注意：** 若你曾在旧版本中将 `data/config.yaml` 或含真实密码的文件提交过 Git，请在 Linux 服务器上**更换 SSH 密码**，并考虑用 `git filter-repo` 清理历史后再推送公开仓库。
+
 ## 注意
 
 - Linux 侧**无需安装本 Agent**，仅需 SSH 可达及上表所列命令
