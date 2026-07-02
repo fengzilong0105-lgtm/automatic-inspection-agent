@@ -1,0 +1,58 @@
+mode: remote
+setup_completed: false
+active_service_id: null
+
+hosts:
+  - id: prod-01
+    name: 生产服务器
+    ssh:
+      host: 192.168.1.100
+      port: 22
+      user: deploy
+      key_file: C:/keys/deploy.pem
+
+services: []
+
+discovery:
+  auto_scan_on_setup: true
+  rescan_interval_hours: 0
+
+monitor:
+  interval_seconds: 60
+  health_fail_threshold: 3
+  log_error_window_minutes: 5
+  log_error_threshold: 5
+
+llm:
+  default:
+    provider: openai
+    base_url: https://api.openai.com/v1
+    api_key: ${LLM_API_KEY}
+    model: gpt-4o-mini
+    temperature: 0.2
+    max_tokens: 4096
+  routing:
+    chat_qa:
+      model: gpt-4o-mini
+      max_tokens: 2048
+    diagnosis:
+      model: gpt-4o-mini
+      max_tokens: 4096
+  ollama_base_url: http://localhost:11434
+
+feishu:
+  enabled: false
+  app_id: ""
+  app_secret: ""
+  alert_chat_id: ""
+
+web:
+  enabled: true
+  host: 0.0.0.0
+  port: 8765
+  auth_token: ${SENTINEL_WEB_TOKEN}
+
+autonomy:
+  max_restart_per_15min: 3
+
+data_dir: ./data

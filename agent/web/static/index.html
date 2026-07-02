@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>服务巡检 Agent</title>
+  <link rel="stylesheet" href="/static/style.css?v=17" />
+  <script defer src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js"></script>
+</head>
+<body>
+  <div class="layout" x-data="dashboard()" x-init="init()">
+    <header>
+      <h1>服务巡检 Agent</h1>
+      <div class="controls">
+        <select x-model="activeHost" @change="setActiveHost(); goHome();">
+          <option value="">选择主机</option>
+          <template x-for="host in hosts" :key="host.id">
+            <option :value="host.id" x-text="host.name + ' (' + host.ssh.host + ')'"></option>
+          </template>
+        </select>
+        <span class="tip-wrap" data-tip="立即执行一轮巡检：检查服务进程/健康状态、扫描 ERROR 日志，并按规则生成告警。">
+          <button @click="runInspection()" :disabled="isBusy()">立即巡检</button>
+        </span>
+        <span class="tip-wrap" data-tip="通过 SSH 扫描所选 Linux 主机上的 Java、Docker、Compose、中间件，将高置信度结果注册为可监控服务。">
+          <button @click="scanHost()" :disabled="isBusy()">扫描服务</button>
+        </span>
+        <span class="tip-wrap" data-tip="打开初始化向导，配置 SSH 连接、大模型、飞书告警，并扫描注册服务。">
+          <button type="button" class="secondary" @click="goSetup()">初始化向导</button>
+        </span>
+        <span class="tip-wrap" data-tip="管理多台主机、大模型、飞书等系统配置，支持连接测试。">
+          <button class="secondary" @click="showSettings = true">设置</button>
+        </span>
+      </div>
+    </header>
+
+    <main class="main-stack">
+      <!-- 主页 -->
+      <template x-if="view === 'home'">
+        <div class="view-home">
+          <div :class="progressBannerClass()" x-show="showProgressBanner()" x-cloak>
+            <span class="spinner" aria-hidden="true"></span>
+            <span x-text="progressMessage()"></span>
+          </div>
+
+          <div class="home-split">
+          <section class="panel home-overview">
+            <div class="overview-head">
+              <h2>服务概览</h2>
+              <span class="muted" x-show="activeHost" x-text="activeHostName()"></span>
+            </div>
+            <template x-if="!showProgressBanner() && !isScanningHost(activeHost) && hostServices().length === 0">
+              <p class="muted empty-hint">当前主机暂无服务，请点击「扫描服务」或在 <button type="button" class="inline-link" @click="showSettings = true">设置</button> 中添加主机。</p>
+            </template>
+            <div class="stat-grid" x-show="hostServices().length > 0">
+              <button type="button" class="stat-card stat-ok" @click="openServiceList('ok')">
+                <div class="stat-label">正常服务</div>
+                <div class="stat-value" x-text="summaryLoading ? '…' : okServiceCount()"></div>
+                <div class="stat-hint" x-text="summaryLoading ? '状态检测中' : '点击查看列表'"></div>
+              </button>
+              <button type="button" class="stat-card stat-bad" @click="openServiceList('bad')">
+                <div class="stat-label">异常服务</div>
+                <div class="stat-value" x-text="summaryLoading ? '…' : badServiceCount()"></div>
+                <div class="stat-hint" x-text="summaryLoading ? '状态检测中' : '点击查看列表'"></div>
+              </button>
+            </div>
+            <p class="muted summary-loading-hint" x-show="summaryLoading">
+              正在检测 <span x-text="hostServices().length"></span> 个服务状态，请稍候…
+            </p>
+            <p class="muted summary-loading-hint" x-show="!summaryLoading && pendingServiceCount() > 0">
+              已注册 <span x-text="hostServices().length"></span> 个服务，其中
+              <span x-text="pendingServiceCount()"></span> 个待检测
+            </p>
+            <p class="muted summary-error-hint" x-show="summaryError" x-text="summaryError"></p>
+            <div class="home-actions">
+              <button type="button" class="secondary alert-entry" @click="openIncidents()">
+                告警记录
+                <span class="count-badge" x-show="hostIncidents().length" x-text="hostIncidents().length"></span>
+              </button>
+            </div>
+          </section>
+
+          <section class="panel chat">
+            <div class="chat-head">
+              <h2>对话运维</h2>
+              <button type="button" class="secondary chat-clear-btn" @click="clearChat()" :disabled="chatSending">清空对话</button>
+            </div>
+            <div class="messages" id="chat-messages">
+              <template x-for="(msg, idx) in messages" :key="idx">
+                <div class="chat-turn" :class="msg.role">
+                  <div class="chat-avatar" x-text="msg.role === 'user' ? '你' : 'AI'"></div>
+                  <div class="chat-bubble">
+                    <div class="msg-content" :class="msg.role === 'assistant' ? 'markdown' : 'plain'" x-html="renderMessage(msg)"></div>
+                  </div>
+                </div>
+              </template>
+              <div class="chat-turn assistant" x-show="chatSending" x-cloak>
+                <div class="chat-avatar">AI</div>
+                <div class="chat-bubble chat-bubble-loading">
+                  <span class="spinner" aria-hidden="true"></span>
+                  <span>思考中…</span>
+                </div>
+              </div>
+            </div>
+            <div class="chat-input">
+              <input x-model="input" @keydown.enter="sendMessage()" :disabled="chatSending" placeholder="例如：road_control 状态怎么样？最近有什么报错？" />
+              <button @click="sendMessage()" :disabled="chatSending">发送</button>
+            </div>
+            <template x-if="pendingRestart">
+              <div class="confirm-box">
+                <p x-text="pendingRestart.message"></p>
+                <button @click="confirmRestart()">确认重启</button>
+                <button class="secondary" @click="pendingRestart=null">取消</button>
+              </div>
+            </template>
+          </section>
+          </div>
+        </div>
+      </template>
+
+      <!-- 服务列表 -->
+      <template x-if="view === 'services'">
+        <section class="panel view-page">
+          <div class="view-toolbar">
+            <button type="button" class="secondary back-btn" @click="goHome()">← 返回</button>
+            <h2 x-text="serviceListTitle()"></h2>
+            <span class="muted" x-text="'共 ' + filteredServiceList().length + ' 个'"></span>
+          </div>
+          <div class="search-bar">
+            <input type="search" x-model="serviceSearch" placeholder="按服务名称或 ID 搜索…" />
+          </div>
+          <template x-if="filteredServiceList().length === 0">
+            <p class="muted empty-hint">没有匹配的服务。</p>
+          </template>
+          <div class="service-grid">
+            <template x-for="item in filteredServiceList()" :key="item.service.id">
+              <div class="card service-card" :class="cardStatusClass(item)" @click="selectService(item)">
+                <div class="card-title" x-text="item.service.name || item.service.id"></div>
+                <div class="service-id muted" x-text="item.service.id"></div>
+                <div class="status-row">
+                  <span class="status-label">运行</span>
+                  <span class="status-badge" :class="runningBadge(item.status.running)" x-text="runningLabel(item.status.running)"></span>
+                </div>
+                <div class="status-row">
+                  <span class="status-label">健康</span>
+                  <span class="status-badge" :class="healthBadge(item.status.health_ok)" x-text="healthLabel(item.status.health_ok)"></span>
+                </div>
+                <div class="muted card-detail" x-text="item.status.detail"></div>
+                <div class="card-actions" @click.stop>
+                  <button type="button" class="secondary" @click="activeService = item.service.id; setActiveService(); syncRuntime()">补全部署信息</button>
+                </div>
+              </div>
+            </template>
+          </div>
+        </section>
+      </template>
+
+      <!-- 告警列表 -->
+      <template x-if="view === 'incidents'">
+        <section class="panel view-page">
+          <div class="view-toolbar">
+            <button type="button" class="secondary back-btn" @click="goHome()">← 返回</button>
+            <h2>告警记录</h2>
+            <span class="muted" x-text="activeHostName()"></span>
+          </div>
+          <template x-if="hostIncidents().length === 0">
+            <p class="muted empty-hint">当前主机暂无告警记录。</p>
+          </template>
+          <div class="incident-list">
+            <template x-for="inc in hostIncidents()" :key="inc.id">
+              <div class="card incident-card">
+                <div class="incident-head">
+                  <div class="card-title" x-text="inc.title"></div>
+                  <span class="severity-badge" :class="'sev-' + (inc.severity || 'P2').toLowerCase()" x-text="inc.severity"></span>
+                </div>
+                <div class="incident-meta">
+                  <span class="status-badge" :class="incidentStatusClass(inc.status)" x-text="incidentStatusLabel(inc.status)"></span>
+                  <span class="muted" x-text="formatDateTime(inc.created_at)"></span>
+                  <span class="muted" x-text="'服务: ' + (inc.service_id || '-')"></span>
+                </div>
+                <div class="incident-summary" x-text="inc.summary || '暂无摘要'"></div>
+                <div class="card-actions">
+                  <button type="button" @click="analyze(inc.id)">分析</button>
+                </div>
+              </div>
+            </template>
+          </div>
+        </section>
+      </template>
+    </main>
+
+    <!-- Settings modal -->
+    <div class="modal-backdrop" x-show="showSettings" x-cloak @click.self="showSettings=false">
+      <div class="modal panel">
+        <h2>系统设置</h2>
+        <p class="muted">主机、大模型、飞书配置保存到 data/config.yaml，立即生效。各主机 SSH 与服务互不影响，可在顶部下拉切换。</p>
+
+        <h3>主机管理</h3>
+        <div class="host-list">
+          <template x-for="host in hosts" :key="host.id">
+            <div class="host-row" :class="{ active: hostEditor && hostEditor.id === host.id }">
+              <div class="host-row-main">
+                <strong x-text="host.name"></strong>
+                <span class="muted" x-text="host.id + ' · ' + host.ssh.host + (host.ssh.use_sudo_su ? ' · sudo su' : '')"></span>
+              </div>
+              <div class="host-row-actions">
+                <button type="button" class="secondary" @click="editHost(host)">编辑</button>
+                <button type="button" class="secondary danger" @click="deleteHost(host)" x-show="hosts.length > 1">删除</button>
+              </div>
+            </div>
+          </template>
+          <p class="muted" x-show="!hosts.length">暂无主机，请添加第一台 Linux 服务器。</p>
+        </div>
+        <button type="button" class="secondary" @click="startAddHost()" x-show="!hostEditor">+ 添加主机</button>
+
+        <template x-if="hostEditor">
+          <div class="host-editor panel-inner">
+            <h4 x-text="hostEditor.isNew ? '添加主机' : '编辑主机'"></h4>
+            <div class="form-grid">
+              <label>主机 ID<input x-model="hostEditor.id" :readonly="!hostEditor.isNew" /></label>
+              <label>显示名称<input x-model="hostEditor.name" /></label>
+              <label>IP / 域名<input x-model="hostEditor.ssh.host" /></label>
+              <label>端口<input type="number" x-model.number="hostEditor.ssh.port" /></label>
+              <label>用户名<input x-model="hostEditor.ssh.user" /></label>
+              <label>私钥路径<input x-model="hostEditor.ssh.key_file" /></label>
+              <label class="full">SSH 密码（可选）<input type="password" x-model="hostEditor.ssh.password" placeholder="留空保持不变" /></label>
+              <label class="checkbox full">
+                <input type="checkbox" x-model="hostEditor.ssh.use_sudo_su" />
+                登录后需 sudo su 提权至 root
+              </label>
+              <p class="field-hint full" x-show="hostEditor.ssh.use_sudo_su">
+                适用于无法用 root 直连 SSH 的服务器：先用普通账号登录，再通过 <code>sudo su</code> 获得 root 权限后执行巡检命令。
+                默认使用上方 SSH 密码作为 sudo 密码；若 sudo 密码不同，请在下方单独填写。
+              </p>
+              <label class="full" x-show="hostEditor.ssh.use_sudo_su">
+                sudo 密码（可选，与 SSH 密码不同时填写）
+                <input type="password" x-model="hostEditor.ssh.sudo_password" placeholder="留空则使用 SSH 密码" />
+              </label>
+            </div>
+            <div class="actions">
+              <button type="button" @click="testHostEditorSsh()">测试 SSH</button>
+              <button type="button" class="primary" @click="saveHostEditor()">保存主机</button>
+              <button type="button" class="secondary" @click="cancelHostEditor()">取消</button>
+            </div>
+            <pre class="result" x-show="settingsSshResult" x-text="settingsSshResult"></pre>
+          </div>
+        </template>
+
+        <h3>大模型</h3>
+        <div class="form-grid">
+          <label>提供商
+            <select x-model="settingsForm.llm.provider">
+              <option value="openai">OpenAI 兼容</option>
+              <option value="ollama">Ollama</option>
+            </select>
+          </label>
+          <label>模型<input x-model="settingsForm.llm.model" /></label>
+          <label class="full" x-show="settingsForm.llm.provider==='openai'">Base URL<input x-model="settingsForm.llm.base_url" /></label>
+          <label class="full" x-show="settingsForm.llm.provider==='openai'">
+            API Key<input type="password" x-model="settingsForm.llm.api_key" :placeholder="settingsForm.llm.api_key_masked || 'sk-...'" />
+          </label>
+          <label class="full" x-show="settingsForm.llm.provider==='ollama'">Ollama 地址<input x-model="settingsForm.llm.ollama_base_url" /></label>
+        </div>
+        <button @click="testLlmSettings()">测试 LLM</button>
+        <pre class="result" x-show="settingsLlmResult" x-text="settingsLlmResult"></pre>
+
+        <h3>飞书告警</h3>
+        <div class="form-grid">
+          <label class="checkbox full">
+            <input type="checkbox" x-model="settingsForm.feishu.enabled" /> 启用飞书告警
+          </label>
+          <label>App ID<input x-model="settingsForm.feishu.app_id" /></label>
+          <label>告警 Chat ID<input x-model="settingsForm.feishu.alert_chat_id" /></label>
+          <label class="full">
+            App Secret
+            <input type="password" x-model="settingsForm.feishu.app_secret" placeholder="留空保持不变" />
+          </label>
+        </div>
+        <button @click="testFeishuSettings()">测试飞书告警</button>
+        <pre class="result" x-show="settingsFeishuResult" x-text="settingsFeishuResult"></pre>
+
+        <div class="actions modal-actions">
+          <button class="secondary" @click="showSettings=false">关闭</button>
+          <button class="primary" @click="saveSettings()">保存 LLM / 飞书</button>
+        </div>
+      </div>
+    </div>
+  </div>
+  <script src="/static/app.js?v=17"></script>
+</body>
+</html>

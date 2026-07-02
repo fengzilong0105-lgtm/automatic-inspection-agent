@@ -1,0 +1,248 @@
+from __future__ import annotations
+
+import json
+from typing import Annotated
+
+from langchain_core.tools import StructuredTool
+
+from agent.discovery.orchestrator import scan_host, to_service_config
+from agent.executor.ssh import get_executor_registry
+from agent.langchain.context_builder import build_diagnosis_context
+from agent.langchain.llm_factory import get_llm
+from agent.executor.java_probe import find_java_process
+from agent.executor.middleware_probe import probe_middleware_process
+from agent.executor.systemd_probe import probe_systemd_unit
+from agent.models import DiagnosisResult, ServiceType
+from agent.monitor.loop import MonitorLoop
+from agent.remediation.orchestrator import ActionOrchestrator
+from agent.settings import get_settings
+from agent.store.incidents import IncidentStore
+
+
+def _resolve_host(host_id: str | None = None):
+    settings = get_settings()
+    if not host_id:
+        active = settings.config.active_host_id
+        if active:
+            return settings.get_host(active)
+        if settings.config.hosts:
+            return settings.config.hosts[0]
+        raise KeyError("未配置任何主机")
+    resolved_id = settings.resolve_host_id(host_id)
+    return settings.get_host(resolved_id)
+
+
+def _tool_error(prefix: str, exc: Exception) -> str:
+    return f"{prefix}: {exc}"
+
+
+def _format_status(status) -> str:
+    payload = {
+        "service_id": status.service_id,
+        "running": status.running,
+        "running_label": "运行中" if status.running else "未运行",
+        "detail": status.detail,
+        "health_ok": status.health_ok,
+        "health_detail": status.health_detail,
+        "note": "running 由进程/systemd/docker 探针判定；health_ok 为 HTTP 健康检查（未配置则为 null）",
+    }
+    return json.dumps(payload, ensure_ascii=False, indent=2)
+
+
+def build_readonly_tools() -> list[StructuredTool]:
+    settings = get_settings()
+    registry = get_executor_registry()
+    incident_store = IncidentStore(settings.data_dir / "agent.db")
+    monitor = MonitorLoop(settings=settings, incident_store=incident_store)
+
+    async def list_services(host_id: str | None = None) -> str:
+        """列出已注册服务，可按 host_id 过滤。"""
+        try:
+            services = settings.get_enabled_services()
+            if host_id:
+                resolved_id = settings.resolve_host_id(host_id)
+                services = [s for s in services if s.host_id == resolved_id]
+            payload = [s.model_dump() for s in services]
+            return json.dumps(payload, ensure_ascii=False, indent=2)
+        except Exception as exc:
+            return _tool_error("list_services 失败", exc)
+
+    async def get_service_status(service_id: str) -> str:
+        """查询指定服务的运行状态和健康检查结果。"""
+        try:
+            service = settings.get_service(service_id)
+            host = settings.get_host(service.host_id)
+            executor = registry.get(service.host_id, host)
+            status = await executor.service_status(service)
+            return _format_status(status)
+        except Exception as exc:
+            return _tool_error("get_service_status 失败", exc)
+
+    async def get_host_metrics(host_id: str) -> str:
+        """查询 Linux 主机 CPU/内存/磁盘等指标。"""
+        try:
+            host = _resolve_host(host_id)
+            executor = registry.get(host.id, host)
+            metrics = await executor.get_metrics()
+            return metrics.model_dump_json(indent=2)
+        except Exception as exc:
+            return _tool_error("get_host_metrics 失败", exc)
+
+    async def read_log(service_id: str, pattern: str = "ERROR", lines: int = 200) -> str:
+        """读取服务最近日志，可按 pattern 过滤。"""
+        try:
+            service = settings.get_service(service_id)
+            if not service.log_path:
+                return f"服务 {service_id} 未配置 log_path"
+            host = settings.get_host(service.host_id)
+            executor = registry.get(service.host_id, host)
+            return await executor.tail_log(service.log_path, lines=lines, pattern=pattern or None)
+        except Exception as exc:
+            return _tool_error("read_log 失败", exc)
+
+    async def read_remote_file(
+        path: str,
+        host_id: str | None = None,
+        service_id: str | None = None,
+        max_bytes: int = 65536,
+    ) -> str:
+        """通过 SSH 读取 Linux 主机上的文本文件（如配置文件、脚本）。path 须为绝对路径。"""
+        try:
+            path = path.strip()
+            if not path.startswith("/"):
+                return "请提供绝对路径，例如 /etc/nginx/nginx.conf"
+            max_bytes = max(1024, min(int(max_bytes), 262144))
+
+            if service_id:
+                service = settings.get_service(service_id)
+                host = settings.get_host(service.host_id)
+            else:
+                host = _resolve_host(host_id)
+            executor = registry.get(host.id, host)
+            content = await executor.read_file(path, max_bytes=max_bytes)
+            if content.startswith(f"FILE_NOT_FOUND:{path}"):
+                return f"文件不存在或无法读取: {path}"
+            truncated = len(content.encode("utf-8", errors="ignore")) >= max_bytes
+            header = f"# {path} @ {host.id} ({host.ssh.host})\n"
+            if truncated:
+                header += f"# 仅显示前 {max_bytes} 字节\n"
+            return header + content
+        except Exception as exc:
+            return _tool_error("read_remote_file 失败", exc)
+
+    async def discovery_scan(host_id: str) -> str:
+        """扫描指定 Linux 主机上的 Java/Docker/Compose/中间件服务。"""
+        try:
+            host = _resolve_host(host_id)
+            executor = registry.get(host.id, host)
+            discovered = await scan_host(executor, host.id)
+            return json.dumps([d.model_dump() for d in discovered], ensure_ascii=False, indent=2, default=str)
+        except Exception as exc:
+            return _tool_error("discovery_scan 失败", exc)
+
+    async def run_inspection(host_id: str | None = None) -> str:
+        """立即执行一次巡检，返回新产生的告警数量。"""
+        try:
+            incidents = await monitor.run_once()
+            if host_id:
+                resolved_id = settings.resolve_host_id(host_id)
+                incidents = [i for i in incidents if i.host_id == resolved_id]
+            return json.dumps(
+                [{"id": i.id, "title": i.title, "service_id": i.service_id} for i in incidents],
+                ensure_ascii=False,
+                indent=2,
+            )
+        except Exception as exc:
+            return _tool_error("run_inspection 失败", exc)
+
+    async def list_incidents(limit: int = 10) -> str:
+        """列出最近 Incident 告警记录。"""
+        await incident_store.init()
+        incidents = await incident_store.list_incidents(limit=limit)
+        return json.dumps([i.model_dump() for i in incidents], ensure_ascii=False, indent=2, default=str)
+
+    async def analyze_incident(incident_id: str) -> str:
+        """对指定 Incident 进行 LLM 根因分析与修复建议。"""
+        await incident_store.init()
+        incident = await incident_store.get_incident(incident_id)
+        if not incident:
+            return f"未找到 incident: {incident_id}"
+        service = settings.get_service(incident.service_id)
+        host = settings.get_host(service.host_id)
+        executor = registry.get(service.host_id, host)
+        log_tail = incident.log_snippet
+        if service.log_path:
+            log_tail = await executor.tail_log(service.log_path, lines=200, pattern="ERROR|Exception|OOM")
+        status = await executor.service_status(service)
+        context = build_diagnosis_context(incident, service, log_tail, _format_status(status))
+        llm = get_llm("diagnosis")
+        structured = llm.with_structured_output(DiagnosisResult)
+        result: DiagnosisResult = await structured.ainvoke(
+            [
+                {
+                    "role": "system",
+                    "content": "你是资深 SRE，请根据证据给出根因、严重级别、修复建议，仅在必要时建议重启。",
+                },
+                {"role": "user", "content": context},
+            ]
+        )
+        await incident_store.update_diagnosis(incident_id, result.root_cause, result.suggestions)
+        return result.model_dump_json(indent=2)
+
+    async def get_deployment_info(service_id: str) -> str:
+        """查询服务部署位置：部署目录(cwd)、PID、启动命令、jar 路径、端口、日志候选。"""
+        try:
+            service = settings.get_service(service_id)
+            host = settings.get_host(service.host_id)
+            executor = registry.get(service.host_id, host)
+            payload: dict = {
+                "service_id": service_id,
+                "host": {"id": host.id, "name": host.name, "ssh_host": host.ssh.host},
+                "registered": service.model_dump(),
+            }
+            if service.type == ServiceType.JAVA:
+                probe = await find_java_process(executor, service)
+                payload["runtime"] = probe
+                if probe.get("primary"):
+                    primary = probe["primary"]
+                    payload["deploy_dir"] = primary.get("deploy_dir")
+                    payload["pid"] = primary.get("pid")
+                    payload["cmdline"] = primary.get("cmdline")
+                    payload["jar_path"] = primary.get("jar_path")
+                    payload["listen_ports"] = primary.get("listen_ports", [])
+                    payload["log_candidates"] = primary.get("log_candidates", [])
+            elif service.type == ServiceType.MIDDLEWARE:
+                if service.systemd_unit:
+                    payload["systemd"] = await probe_systemd_unit(executor, service.systemd_unit)
+                payload["process"] = await probe_middleware_process(executor, service.id)
+            status = await executor.service_status(service)
+            payload["status"] = status.model_dump(mode="json")
+            return json.dumps(payload, ensure_ascii=False, indent=2, default=str)
+        except Exception as exc:
+            return _tool_error("get_deployment_info 失败", exc)
+
+    async def list_config_files(service_id: str) -> str:
+        """列出服务关联的配置文件路径（读取内容请用 read_remote_file）。"""
+        service = settings.get_service(service_id)
+        files = [c.model_dump() for c in service.config_files]
+        if service.log_path:
+            files.append({"name": "log", "path": service.log_path})
+        if service.jar_path:
+            files.append({"name": "jar", "path": service.jar_path})
+        if service.deploy_dir:
+            files.append({"name": "deploy_dir", "path": service.deploy_dir})
+        return json.dumps(files, ensure_ascii=False, indent=2)
+
+    return [
+        StructuredTool.from_function(coroutine=list_services, name="list_services"),
+        StructuredTool.from_function(coroutine=get_service_status, name="get_service_status"),
+        StructuredTool.from_function(coroutine=get_deployment_info, name="get_deployment_info"),
+        StructuredTool.from_function(coroutine=get_host_metrics, name="get_host_metrics"),
+        StructuredTool.from_function(coroutine=read_log, name="read_log"),
+        StructuredTool.from_function(coroutine=read_remote_file, name="read_remote_file"),
+        StructuredTool.from_function(coroutine=discovery_scan, name="discovery_scan"),
+        StructuredTool.from_function(coroutine=run_inspection, name="run_inspection"),
+        StructuredTool.from_function(coroutine=list_incidents, name="list_incidents"),
+        StructuredTool.from_function(coroutine=analyze_incident, name="analyze_incident"),
+        StructuredTool.from_function(coroutine=list_config_files, name="list_config_files"),
+    ]
