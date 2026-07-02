@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>服务巡检 Agent</title>
-  <link rel="stylesheet" href="/static/style.css?v=17" />
+  <link rel="stylesheet" href="/static/style.css?v=18" />
   <script defer src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js"></script>
 </head>
 <body>
@@ -84,22 +84,16 @@
               <h2>对话运维</h2>
               <button type="button" class="secondary chat-clear-btn" @click="clearChat()" :disabled="chatSending">清空对话</button>
             </div>
+            <p class="chat-tool-status" x-show="chatToolStatus" x-text="chatToolStatus"></p>
             <div class="messages" id="chat-messages">
               <template x-for="(msg, idx) in messages" :key="idx">
                 <div class="chat-turn" :class="msg.role">
                   <div class="chat-avatar" x-text="msg.role === 'user' ? '你' : 'AI'"></div>
                   <div class="chat-bubble">
-                    <div class="msg-content" :class="msg.role === 'assistant' ? 'markdown' : 'plain'" x-html="renderMessage(msg)"></div>
+                    <div class="msg-content" :class="msg.role === 'assistant' ? (msg.streaming ? 'streaming' : 'markdown') : 'plain'" x-html="renderMessage(msg)"></div>
                   </div>
                 </div>
               </template>
-              <div class="chat-turn assistant" x-show="chatSending" x-cloak>
-                <div class="chat-avatar">AI</div>
-                <div class="chat-bubble chat-bubble-loading">
-                  <span class="spinner" aria-hidden="true"></span>
-                  <span>思考中…</span>
-                </div>
-              </div>
             </div>
             <div class="chat-input">
               <input x-model="input" @keydown.enter="sendMessage()" :disabled="chatSending" placeholder="例如：road_control 状态怎么样？最近有什么报错？" />
@@ -285,6 +279,6 @@
       </div>
     </div>
   </div>
-  <script src="/static/app.js?v=17"></script>
+  <script src="/static/app.js?v=18"></script>
 </body>
 </html>

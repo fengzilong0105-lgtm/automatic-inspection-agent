@@ -32,6 +32,7 @@ function dashboard() {
     view: "home",
     serviceFilter: "ok",
     chatSending: false,
+    chatToolStatus: "",
 
     goHome() {
       this.view = "home";
@@ -352,6 +353,10 @@ function dashboard() {
       const text = msg.text || "";
       if (msg.role === "user") {
         return `<div class="md-user-text">${this.escapeHtml(text).replace(/\n/g, "<br>")}</div>`;
+      }
+      if (msg.streaming) {
+        const body = this.escapeHtml(text).replace(/\n/g, "<br>");
+        return `<div class="md-streaming">${body}<span class="stream-cursor">▋</span></div>`;
       }
       return this.renderMarkdown(text);
     },
@@ -861,25 +866,105 @@ function dashboard() {
 
     async analyze(incidentId) {
       this.view = "home";
-      this.messages.push({ role: "user", text: `分析 incident ${incidentId}` });
+      await this.streamChatMessage(
+        `请分析 incident ${incidentId}`,
+        `分析 incident ${incidentId}`
+      );
+    },
+
+    async streamChatMessage(userText, displayText = null) {
+      if (this.chatSending) return;
+      this.messages.push({ role: "user", text: displayText || userText });
       this.scrollChatToBottom();
+      this.chatSending = true;
+      this.chatToolStatus = "";
+
+      const assistantIdx = this.messages.length;
+      this.messages.push({ role: "assistant", text: "", streaming: true });
+      this.scrollChatToBottom();
+
+      const finishAssistant = (text, streaming = false) => {
+        this.messages[assistantIdx] = { role: "assistant", text, streaming };
+      };
+
       try {
-        const result = await this.api("/api/chat/message", {
+        const res = await fetch("/api/chat/stream", {
           method: "POST",
-          body: JSON.stringify({
-            session_id: this.sessionId,
-            message: `请分析 incident ${incidentId}`,
-          }),
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ session_id: this.sessionId, message: userText }),
         });
-        if (result.type === "error") {
-          this.messages.push({ role: "assistant", text: result.message || "对话处理失败" });
-          this.scrollChatToBottom();
-          return;
+        if (!res.ok) {
+          let detail = await res.text();
+          try {
+            const parsed = JSON.parse(detail);
+            detail = parsed.detail || detail;
+          } catch {
+            /* keep raw */
+          }
+          throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
         }
-        this.messages.push({ role: "assistant", text: result.message || JSON.stringify(result) });
-        this.scrollChatToBottom();
+        if (!res.body) throw new Error("流式响应不可用");
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const parts = buffer.split("\n\n");
+          buffer = parts.pop() || "";
+          for (const part of parts) {
+            const line = part.trim();
+            if (!line.startsWith("data:")) continue;
+            let payload;
+            try {
+              payload = JSON.parse(line.slice(5).trim());
+            } catch {
+              continue;
+            }
+            const event = payload.event;
+            const data = payload.data;
+            if (event === "delta") {
+              const cur = this.messages[assistantIdx];
+              finishAssistant((cur.text || "") + (data || ""), true);
+              this.scrollChatToBottom();
+            } else if (event === "tool_start") {
+              this.chatToolStatus = `正在调用工具: ${data}…`;
+            } else if (event === "tool_end") {
+              this.chatToolStatus = "工具执行完成，正在生成回答…";
+            } else if (event === "history_reset") {
+              const cur = this.messages[assistantIdx];
+              const prefix = "（上下文已自动重置）\n\n";
+              if (!(cur.text || "").startsWith(prefix)) {
+                finishAssistant(prefix + (cur.text || ""), true);
+              }
+              this.chatToolStatus = data || "上下文已重置…";
+            } else if (event === "confirm_restart") {
+              this.pendingRestart = data;
+              finishAssistant(data.message || "请确认是否重启", false);
+              this.chatToolStatus = "";
+              return;
+            } else if (event === "error") {
+              finishAssistant(data || "对话处理失败", false);
+              this.chatToolStatus = "";
+              return;
+            } else if (event === "done") {
+              const cur = this.messages[assistantIdx];
+              finishAssistant(cur.text || "已完成查询。", false);
+              this.chatToolStatus = "";
+              return;
+            }
+          }
+        }
+        const cur = this.messages[assistantIdx];
+        finishAssistant(cur.text || "已完成查询。", false);
       } catch (e) {
-        this.messages.push({ role: "assistant", text: `请求失败: ${e.message}` });
+        finishAssistant(`请求失败: ${e.message}`, false);
+      } finally {
+        this.chatSending = false;
+        this.chatToolStatus = "";
         this.scrollChatToBottom();
       }
     },
@@ -901,38 +986,8 @@ function dashboard() {
     async sendMessage() {
       const text = this.input.trim();
       if (!text || this.chatSending) return;
-      this.messages.push({ role: "user", text });
       this.input = "";
-      this.scrollChatToBottom();
-      this.chatSending = true;
-      try {
-        const result = await this.api("/api/chat/message", {
-          method: "POST",
-          body: JSON.stringify({ session_id: this.sessionId, message: text }),
-        });
-        if (result.type === "confirm_restart") {
-          this.pendingRestart = result;
-          this.messages.push({ role: "assistant", text: result.message });
-          this.scrollChatToBottom();
-          return;
-        }
-        if (result.type === "error") {
-          this.messages.push({ role: "assistant", text: result.message || "对话处理失败" });
-          this.scrollChatToBottom();
-          return;
-        }
-        let reply = result.message || JSON.stringify(result);
-        if (result.history_reset) {
-          reply = "（上一轮对话上下文已损坏并已自动重置，以下为本次回答）\n\n" + reply;
-        }
-        this.messages.push({ role: "assistant", text: reply });
-        this.scrollChatToBottom();
-      } catch (e) {
-        this.messages.push({ role: "assistant", text: `请求失败: ${e.message}` });
-        this.scrollChatToBottom();
-      } finally {
-        this.chatSending = false;
-      }
+      await this.streamChatMessage(text);
     },
 
     async confirmRestart() {

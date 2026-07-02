@@ -25,6 +25,23 @@ def _is_corrupt_history_error(exc: Exception) -> bool:
     return any(marker in text for marker in _CORRUPT_HISTORY_MARKERS)
 
 
+def _extract_chunk_text(chunk) -> str:
+    content = getattr(chunk, "content", None)
+    if not content:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for block in content:
+            if isinstance(block, str):
+                parts.append(block)
+            elif isinstance(block, dict) and block.get("type") == "text":
+                parts.append(str(block.get("text", "")))
+        return "".join(parts)
+    return str(content)
+
+
 class ChatAgent:
     def __init__(self) -> None:
         self.settings = get_settings()
@@ -139,17 +156,68 @@ class ChatAgent:
 
         return {"type": "message", "message": final_message, "requires_confirm": False}
 
-    async def stream_message(self, session_id: str, text: str):
-        config = {"configurable": {"thread_id": session_id}}
-        inputs = {"messages": [HumanMessage(content=text)]}
-        graph = self._ensure_graph()
-        async for event in graph.astream_events(inputs, config=config, version="v2"):
-            kind = event.get("event")
-            if kind == "on_chat_model_stream":
-                chunk = event.get("data", {}).get("chunk")
-                if chunk and getattr(chunk, "content", None):
-                    yield {"event": "delta", "data": chunk.content}
-            elif kind == "on_tool_end":
-                output = event.get("data", {}).get("output")
-                yield {"event": "tool", "data": str(output)[:2000]}
+    async def stream_message(
+        self, session_id: str, text: str, confirmed: bool = False
+    ):
+        restart_target = self._detect_restart_intent(text)
+        if restart_target and not confirmed:
+            service = self.settings.get_service(restart_target)
+            yield {
+                "event": "confirm_restart",
+                "data": {
+                    "service_id": restart_target,
+                    "message": (
+                        f"确认重启服务 `{restart_target}` 吗？（类型: {service.type.value}）"
+                    ),
+                    "requires_confirm": True,
+                },
+            }
+            return
+        if restart_target and confirmed:
+            result = await self.orchestrator.restart_service(restart_target)
+            ok = result.exit_code == 0
+            yield {
+                "event": "restart_result",
+                "data": {
+                    "service_id": restart_target,
+                    "success": ok,
+                    "message": result.stdout or result.stderr or ("重启成功" if ok else "重启失败"),
+                },
+            }
+            return
+
+        async def _run_stream():
+            config = {"configurable": {"thread_id": session_id}}
+            inputs = {"messages": [HumanMessage(content=text)]}
+            graph = self._ensure_graph()
+            async for event in graph.astream_events(inputs, config=config, version="v2"):
+                kind = event.get("event")
+                if kind == "on_chat_model_stream":
+                    chunk = event.get("data", {}).get("chunk")
+                    delta = _extract_chunk_text(chunk)
+                    if delta:
+                        yield {"event": "delta", "data": delta}
+                elif kind == "on_tool_start":
+                    tool_name = event.get("name") or "tool"
+                    yield {"event": "tool_start", "data": str(tool_name)}
+                elif kind == "on_tool_end":
+                    output = event.get("data", {}).get("output")
+                    yield {"event": "tool_end", "data": str(output)[:800]}
+
+        try:
+            async for item in _run_stream():
+                yield item
+        except Exception as exc:
+            if _is_corrupt_history_error(exc):
+                await self.clear_session(session_id)
+                yield {"event": "history_reset", "data": "上下文已自动重置，正在重试…"}
+                try:
+                    async for item in _run_stream():
+                        yield item
+                except Exception as retry_exc:
+                    yield {"event": "error", "data": f"对话处理失败（已重置后重试）: {retry_exc}"}
+                    return
+            else:
+                yield {"event": "error", "data": f"对话处理失败: {exc}"}
+                return
         yield {"event": "done", "data": ""}

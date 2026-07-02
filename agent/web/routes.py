@@ -456,10 +456,20 @@ def create_app() -> FastAPI:
     @app.post("/api/chat/stream")
     async def chat_stream(body: ChatMessageRequest, _: None = Depends(_auth_dependency)):
         async def event_generator():
-            async for chunk in chat_agent.stream_message(body.session_id, body.message):
+            async for chunk in chat_agent.stream_message(
+                body.session_id, body.message, confirmed=body.confirmed
+            ):
                 yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
 
-        return StreamingResponse(event_generator(), media_type="text/event-stream")
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
 
     @app.post("/api/chat/confirm-restart")
     async def confirm_restart(
