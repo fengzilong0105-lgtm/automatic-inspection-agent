@@ -6,6 +6,7 @@ from typing import Annotated
 from langchain_core.tools import StructuredTool
 
 from agent.discovery.orchestrator import scan_host, to_service_config
+from agent.executor.command_policy import format_command_result, validate_remote_command
 from agent.executor.ssh import get_executor_registry
 from agent.langchain.context_builder import build_diagnosis_context
 from agent.langchain.llm_factory import get_llm
@@ -130,6 +131,29 @@ def build_readonly_tools() -> list[StructuredTool]:
         except Exception as exc:
             return _tool_error("read_remote_file 失败", exc)
 
+    async def run_remote_command(
+        command: str,
+        host_id: str | None = None,
+        service_id: str | None = None,
+        timeout_seconds: int = 60,
+    ) -> str:
+        """通过 SSH 在 Linux 主机上执行只读/诊断类 shell 命令（如 ls、ps、grep、systemctl status）。禁止 rm/reboot 等写操作。"""
+        try:
+            cmd = validate_remote_command(command)
+            timeout_seconds = max(5, min(int(timeout_seconds), 120))
+
+            if service_id:
+                service = settings.get_service(service_id)
+                host = settings.get_host(service.host_id)
+            else:
+                host = _resolve_host(host_id)
+            executor = registry.get(host.id, host)
+            result = await executor.run(cmd, timeout=timeout_seconds)
+            host_label = f"{host.id} ({host.ssh.host})"
+            return format_command_result(host_label, cmd, result)
+        except Exception as exc:
+            return _tool_error("run_remote_command 失败", exc)
+
     async def discovery_scan(host_id: str) -> str:
         """扫描指定 Linux 主机上的 Java/Docker/Compose/中间件服务。"""
         try:
@@ -240,6 +264,7 @@ def build_readonly_tools() -> list[StructuredTool]:
         StructuredTool.from_function(coroutine=get_host_metrics, name="get_host_metrics"),
         StructuredTool.from_function(coroutine=read_log, name="read_log"),
         StructuredTool.from_function(coroutine=read_remote_file, name="read_remote_file"),
+        StructuredTool.from_function(coroutine=run_remote_command, name="run_remote_command"),
         StructuredTool.from_function(coroutine=discovery_scan, name="discovery_scan"),
         StructuredTool.from_function(coroutine=run_inspection, name="run_inspection"),
         StructuredTool.from_function(coroutine=list_incidents, name="list_incidents"),
