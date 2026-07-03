@@ -7,15 +7,18 @@ from langchain_core.tools import StructuredTool
 
 from agent.discovery.orchestrator import scan_host, to_service_config
 from agent.executor.command_policy import format_command_result, validate_remote_command
+from agent.executor.write_policy import is_path_allowed, normalize_remote_path
 from agent.executor.ssh import get_executor_registry
 from agent.langchain.context_builder import build_diagnosis_context
 from agent.langchain.llm_factory import get_llm
+from agent.langchain.session_context import chat_session_id
 from agent.executor.java_probe import find_java_process
 from agent.executor.middleware_probe import probe_middleware_process
 from agent.executor.systemd_probe import probe_systemd_unit
 from agent.models import DiagnosisResult, ServiceType
 from agent.monitor.loop import MonitorLoop
 from agent.remediation.orchestrator import ActionOrchestrator
+from agent.remediation.pending_writes import get_pending_file_op_store
 from agent.settings import get_settings
 from agent.store.incidents import IncidentStore
 
@@ -35,6 +38,71 @@ def _resolve_host(host_id: str | None = None):
 
 def _tool_error(prefix: str, exc: Exception) -> str:
     return f"{prefix}: {exc}"
+
+
+def _extract_tool_output_text(output: str | object) -> str:
+    if output is None:
+        return ""
+    if isinstance(output, str):
+        return output
+    if isinstance(output, list):
+        parts: list[str] = []
+        for block in output:
+            if isinstance(block, str):
+                parts.append(block)
+            elif isinstance(block, dict):
+                if block.get("type") == "text":
+                    parts.append(str(block.get("text", "")))
+                elif "text" in block:
+                    parts.append(str(block["text"]))
+        return "".join(parts)
+    if hasattr(output, "content"):
+        return _extract_tool_output_text(output.content)
+    return str(output)
+
+
+def parse_write_tool_pending(output: str | object) -> dict | None:
+    return parse_file_op_pending(output)
+
+
+def parse_file_op_pending(output: str | object) -> dict | None:
+    raw = _extract_tool_output_text(output).strip()
+    if not raw:
+        return None
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        start = raw.find("{")
+        end = raw.rfind("}")
+        if start >= 0 and end > start:
+            try:
+                payload = json.loads(raw[start : end + 1])
+            except json.JSONDecodeError:
+                return None
+        else:
+            return None
+    op_id = payload.get("op_id") or payload.get("write_id")
+    if payload.get("status") == "pending_confirm" and op_id:
+        payload.setdefault("op_id", op_id)
+        payload.setdefault("write_id", op_id)
+        return payload
+    return None
+
+
+def _resolve_tool_host(host_id: str | None, service_id: str | None, settings):
+    if service_id:
+        service = settings.get_service(service_id)
+        return settings.get_host(service.host_id)
+    return _resolve_host(host_id)
+
+
+def _pending_file_op_response(pending, host_label: str, hint: str) -> str:
+    confirm = get_pending_file_op_store().to_confirm_payload(pending, host_label)
+    return json.dumps(
+        {"status": "pending_confirm", **confirm, "hint": hint},
+        ensure_ascii=False,
+        indent=2,
+    )
 
 
 def _format_status(status) -> str:
@@ -154,6 +222,76 @@ def build_readonly_tools() -> list[StructuredTool]:
         except Exception as exc:
             return _tool_error("run_remote_command 失败", exc)
 
+    async def write_remote_file(
+        path: str,
+        content: str,
+        host_id: str | None = None,
+        service_id: str | None = None,
+    ) -> str:
+        """在 Linux 主机新建或覆盖文本文件。不会立即落盘，需用户在对话中逐次确认后执行。"""
+        try:
+            normalized = normalize_remote_path(path)
+            if not is_path_allowed(normalized, settings.config.autonomy):
+                return json.dumps(
+                    {
+                        "status": "rejected",
+                        "reason": "路径未被允许（可在配置中开启 write_allow_all_paths）",
+                        "path": normalized,
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                )
+
+            host = _resolve_tool_host(host_id, service_id, settings)
+            pending = get_pending_file_op_store().create_write(
+                session_id=chat_session_id.get(),
+                host_id=host.id,
+                path=normalized,
+                content=content,
+            )
+            host_label = f"{host.id} ({host.ssh.host})"
+            return _pending_file_op_response(
+                pending,
+                host_label,
+                "已创建写入请求，请等待用户在界面确认后才会落盘。一次只处理一个文件操作。",
+            )
+        except Exception as exc:
+            return _tool_error("write_remote_file 失败", exc)
+
+    async def delete_remote_file(
+        path: str,
+        host_id: str | None = None,
+        service_id: str | None = None,
+    ) -> str:
+        """删除 Linux 主机上的文件。不会立即删除，需用户在对话中逐次确认后执行。"""
+        try:
+            normalized = normalize_remote_path(path)
+            if not is_path_allowed(normalized, settings.config.autonomy):
+                return json.dumps(
+                    {
+                        "status": "rejected",
+                        "reason": "路径未被允许（可在配置中开启 write_allow_all_paths）",
+                        "path": normalized,
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                )
+
+            host = _resolve_tool_host(host_id, service_id, settings)
+            pending = get_pending_file_op_store().create_delete(
+                session_id=chat_session_id.get(),
+                host_id=host.id,
+                path=normalized,
+            )
+            host_label = f"{host.id} ({host.ssh.host})"
+            return _pending_file_op_response(
+                pending,
+                host_label,
+                "已创建删除请求，请等待用户在界面确认后才会执行。",
+            )
+        except Exception as exc:
+            return _tool_error("delete_remote_file 失败", exc)
+
     async def discovery_scan(host_id: str) -> str:
         """扫描指定 Linux 主机上的 Java/Docker/Compose/中间件服务。"""
         try:
@@ -264,6 +402,8 @@ def build_readonly_tools() -> list[StructuredTool]:
         StructuredTool.from_function(coroutine=get_host_metrics, name="get_host_metrics"),
         StructuredTool.from_function(coroutine=read_log, name="read_log"),
         StructuredTool.from_function(coroutine=read_remote_file, name="read_remote_file"),
+        StructuredTool.from_function(coroutine=write_remote_file, name="write_remote_file"),
+        StructuredTool.from_function(coroutine=delete_remote_file, name="delete_remote_file"),
         StructuredTool.from_function(coroutine=run_remote_command, name="run_remote_command"),
         StructuredTool.from_function(coroutine=discovery_scan, name="discovery_scan"),
         StructuredTool.from_function(coroutine=run_inspection, name="run_inspection"),

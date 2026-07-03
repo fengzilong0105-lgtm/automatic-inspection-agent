@@ -54,5 +54,9 @@ web:
 
 autonomy:
   max_restart_per_15min: 3
+  write_allow_all_paths: true
+  # 仅当 write_allow_all_paths: false 时，下面的路径模式才会生效
+  # write_path_whitelist:
+  #   - /etc/systemd/system/*.service
 
 data_dir: ./data

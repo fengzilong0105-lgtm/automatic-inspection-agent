@@ -450,9 +450,25 @@ button:disabled { opacity: 0.55; cursor: not-allowed; }
 .chat-input { display: flex; gap: 8px; flex-shrink: 0; }
 .chat-input input { flex: 1; }
 .confirm-box {
-  margin-top: 12px; padding: 12px; border: 1px solid #f59e0b;
-  border-radius: 10px; background: #1c1917;
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid #f59e0b;
+  border-radius: 10px;
+  background: #1c1917;
   flex-shrink: 0;
+}
+
+.write-preview {
+  max-height: 200px;
+  overflow: auto;
+  margin: 8px 0 12px;
+  padding: 10px;
+  background: #111827;
+  border: 1px solid #374151;
+  border-radius: 6px;
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 @media (max-width: 960px) {

@@ -9,11 +9,35 @@ from langgraph.prebuilt import ToolNode, create_react_agent
 
 from agent.langchain.context_builder import build_chat_system_prompt
 from agent.langchain.llm_factory import get_llm
-from agent.langchain.tools import build_readonly_tools
+from agent.langchain.session_context import chat_session_id
+from agent.langchain.tools import (
+    _extract_tool_output_text,
+    build_readonly_tools,
+    parse_file_op_pending,
+)
 from agent.remediation.orchestrator import ActionOrchestrator
-from agent.settings import get_settings
+from agent.remediation.pending_writes import get_pending_file_op_store
+from agent.settings import Settings, get_settings
 
-_RESTART_PATTERN = re.compile(r"(重启|restart)\s*([a-zA-Z0-9_-]+)?", re.I)
+# 询问「如何重启」类问题，不应触发执行重启
+_HOWTO_RESTART = re.compile(
+    r"(如何|怎么|怎样|咋).{0,30}重启"
+    r"|重启.{0,20}(如何|怎么|怎样|方法|命令|步骤|方式|教程)"
+    r"|how\s+(?:do\s+(?:i|you|we)\s+)?restart"
+    r"|what\s+(?:is|are)\s+the\s+restart",
+    re.I,
+)
+# 明确的重启执行意图（须带服务名，或单独说「重启」且非询问）
+_ACTION_RESTART = re.compile(
+    r"(?:请|帮我|帮忙|麻烦|立刻|马上|现在|直接)?(?:执行)?(?:重启|restart)\s+([a-zA-Z0-9_.-]+)"
+    r"|^确认重启"
+    r"|(?:^|[^\w])([a-zA-Z0-9_.-]+)\s*(?:请)?(?:重启|restart)(?:吧|一下|服务)?\s*(?:[？?]|$|[，。！!])",
+    re.I,
+)
+_BARE_RESTART = re.compile(
+    r"^(?:请|帮我|帮忙)?(?:执行)?(?:重启|restart)(?:吧|一下|服务)?[？?！!。.]*$",
+    re.I,
+)
 _CORRUPT_HISTORY_MARKERS = (
     "INVALID_CHAT_HISTORY",
     "tool_calls that do not have a corresponding ToolMessage",
@@ -40,6 +64,42 @@ def _extract_chunk_text(chunk) -> str:
                 parts.append(str(block.get("text", "")))
         return "".join(parts)
     return str(content)
+
+
+def _resolve_service_id(settings: Settings, token: str) -> str | None:
+    ref = (token or "").strip()
+    if not ref:
+        return None
+    services = settings.config.services
+    for service in services:
+        if service.id == ref:
+            return service.id
+    lowered = ref.lower()
+    for service in services:
+        if lowered in service.id.lower() or lowered in service.name.lower():
+            return service.id
+    return None
+
+
+def detect_restart_intent(settings: Settings, text: str) -> str | None:
+    """仅在用户明确要求执行重启时返回 service_id；「如何重启」类问题返回 None。"""
+    stripped = (text or "").strip()
+    if not stripped:
+        return None
+    if _HOWTO_RESTART.search(stripped):
+        return None
+
+    action = _ACTION_RESTART.search(stripped)
+    if action:
+        token = action.group(1) or action.group(2)
+        if token:
+            return _resolve_service_id(settings, token)
+        return None
+
+    if _BARE_RESTART.match(stripped) and settings.config.active_service_id:
+        return settings.config.active_service_id
+
+    return None
 
 
 class ChatAgent:
@@ -80,28 +140,24 @@ class ChatAgent:
         await self._memory.adelete_thread(session_id)
 
     async def _invoke_graph(self, session_id: str, text: str) -> str:
-        config = {"configurable": {"thread_id": session_id}}
-        inputs = {"messages": [HumanMessage(content=text)]}
-        graph = self._ensure_graph()
-        final_message = ""
-        async for event in graph.astream(inputs, config=config, stream_mode="values"):
-            messages = event.get("messages", [])
-            if messages:
-                last = messages[-1]
-                if isinstance(last, AIMessage) and last.content:
-                    final_message = str(last.content)
-        return final_message or "已完成查询。"
+        token = chat_session_id.set(session_id)
+        try:
+            config = {"configurable": {"thread_id": session_id}}
+            inputs = {"messages": [HumanMessage(content=text)]}
+            graph = self._ensure_graph()
+            final_message = ""
+            async for event in graph.astream(inputs, config=config, stream_mode="values"):
+                messages = event.get("messages", [])
+                if messages:
+                    last = messages[-1]
+                    if isinstance(last, AIMessage) and last.content:
+                        final_message = str(last.content)
+            return final_message or "已完成查询。"
+        finally:
+            chat_session_id.reset(token)
 
     def _detect_restart_intent(self, text: str) -> str | None:
-        match = _RESTART_PATTERN.search(text)
-        if not match:
-            return None
-        service_id = match.group(2)
-        if service_id:
-            return service_id
-        if self.settings.config.active_service_id:
-            return self.settings.config.active_service_id
-        return None
+        return detect_restart_intent(self.settings, text)
 
     async def handle_message(
         self,
@@ -186,34 +242,62 @@ class ChatAgent:
             }
             return
 
+        confirm_write_emitted = False
+
         async def _run_stream():
-            config = {"configurable": {"thread_id": session_id}}
-            inputs = {"messages": [HumanMessage(content=text)]}
-            graph = self._ensure_graph()
-            async for event in graph.astream_events(inputs, config=config, version="v2"):
-                kind = event.get("event")
-                if kind == "on_chat_model_stream":
-                    chunk = event.get("data", {}).get("chunk")
-                    delta = _extract_chunk_text(chunk)
-                    if delta:
-                        yield {"event": "delta", "data": delta}
-                elif kind == "on_tool_start":
-                    tool_name = event.get("name") or "tool"
-                    yield {"event": "tool_start", "data": str(tool_name)}
-                elif kind == "on_tool_end":
-                    output = event.get("data", {}).get("output")
-                    yield {"event": "tool_end", "data": str(output)[:800]}
+            nonlocal confirm_write_emitted
+            token = chat_session_id.set(session_id)
+            try:
+                config = {"configurable": {"thread_id": session_id}}
+                inputs = {"messages": [HumanMessage(content=text)]}
+                graph = self._ensure_graph()
+                async for event in graph.astream_events(inputs, config=config, version="v2"):
+                    kind = event.get("event")
+                    if kind == "on_chat_model_stream":
+                        chunk = event.get("data", {}).get("chunk")
+                        delta = _extract_chunk_text(chunk)
+                        if delta:
+                            yield {"event": "delta", "data": delta}
+                    elif kind == "on_tool_start":
+                        tool_name = event.get("name") or "tool"
+                        yield {"event": "tool_start", "data": str(tool_name)}
+                    elif kind == "on_tool_end":
+                        output = event.get("data", {}).get("output")
+                        yield {"event": "tool_end", "data": _extract_tool_output_text(output)[:800]}
+                        pending = parse_file_op_pending(output)
+                        if pending:
+                            confirm_write_emitted = True
+                            yield {"event": "confirm_write", "data": pending}
+            finally:
+                chat_session_id.reset(token)
+
+        def _fallback_confirm_write() -> dict | None:
+            pending_item = get_pending_file_op_store().latest_for_session(session_id)
+            if not pending_item:
+                return None
+            host = self.settings.get_host(pending_item.host_id)
+            host_label = f"{host.id} ({host.ssh.host})"
+            return get_pending_file_op_store().to_confirm_payload(pending_item, host_label)
 
         try:
             async for item in _run_stream():
                 yield item
+            if not confirm_write_emitted:
+                fallback = _fallback_confirm_write()
+                if fallback:
+                    yield {"event": "confirm_write", "data": fallback}
         except Exception as exc:
             if _is_corrupt_history_error(exc):
                 await self.clear_session(session_id)
                 yield {"event": "history_reset", "data": "上下文已自动重置，正在重试…"}
+                confirm_write_emitted = False
                 try:
                     async for item in _run_stream():
                         yield item
+                    if not confirm_write_emitted:
+                        fallback = _fallback_confirm_write()
+                        if fallback:
+                            yield {"event": "confirm_write", "data": fallback}
                 except Exception as retry_exc:
                     yield {"event": "error", "data": f"对话处理失败（已重置后重试）: {retry_exc}"}
                     return

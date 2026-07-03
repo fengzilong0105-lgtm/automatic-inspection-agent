@@ -28,6 +28,7 @@ from agent.langchain.chat_graph import ChatAgent
 from agent.models import AppConfig, ServiceConfig
 from agent.monitor.loop import MonitorLoop
 from agent.remediation.orchestrator import ActionOrchestrator
+from agent.remediation.write_orchestrator import WriteOrchestrator
 from agent.config_mgr.hosts import (
     build_host_config,
     delete_host,
@@ -71,6 +72,12 @@ class ConfirmRestartRequest(BaseModel):
     session_id: str = "default"
 
 
+class ConfirmWriteRequest(BaseModel):
+    write_id: str
+    op_id: str | None = None
+    session_id: str = "default"
+
+
 def _auth_dependency(
     authorization: str | None = Header(default=None),
     settings: Settings = Depends(get_settings),
@@ -88,6 +95,7 @@ def create_app() -> FastAPI:
     app = FastAPI(title="Automatic Inspection Agent", version="0.1.0")
     chat_agent = ChatAgent()
     orchestrator = ActionOrchestrator()
+    write_orchestrator = WriteOrchestrator()
     feishu = FeishuNotifier()
 
     @app.on_event("startup")
@@ -435,6 +443,21 @@ def create_app() -> FastAPI:
         await chat_agent.clear_session(body.session_id)
         return {"cleared": True, "session_id": body.session_id}
 
+    @app.get("/api/chat/pending-file-op")
+    async def pending_file_op(
+        session_id: str = "default", _: None = Depends(_auth_dependency)
+    ) -> dict[str, Any]:
+        from agent.remediation.pending_writes import get_pending_file_op_store
+
+        store = get_pending_file_op_store()
+        item = store.latest_for_session(session_id)
+        if not item:
+            return {"pending": False}
+        settings = get_settings()
+        host = settings.get_host(item.host_id)
+        host_label = f"{host.id} ({host.ssh.host})"
+        return {"pending": True, **store.to_confirm_payload(item, host_label)}
+
     @app.post("/api/chat/message")
     async def chat_message(
         body: ChatMessageRequest, _: None = Depends(_auth_dependency)
@@ -476,6 +499,19 @@ def create_app() -> FastAPI:
         body: ConfirmRestartRequest, _: None = Depends(_auth_dependency)
     ) -> dict[str, Any]:
         result = await orchestrator.restart_service(body.service_id)
+        return {
+            "success": result.exit_code == 0,
+            "stdout": result.stdout,
+            "stderr": result.stderr,
+            "exit_code": result.exit_code,
+        }
+
+    @app.post("/api/chat/confirm-write")
+    async def confirm_write(
+        body: ConfirmWriteRequest, _: None = Depends(_auth_dependency)
+    ) -> dict[str, Any]:
+        op_id = body.op_id or body.write_id
+        result = await write_orchestrator.execute_pending_op(op_id, body.session_id)
         return {
             "success": result.exit_code == 0,
             "stdout": result.stdout,

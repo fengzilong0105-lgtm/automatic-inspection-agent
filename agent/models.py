@@ -104,6 +104,8 @@ class WebConfig(BaseModel):
 
 class AutonomyConfig(BaseModel):
     max_restart_per_15min: int = 3
+    write_allow_all_paths: bool = True
+    write_path_whitelist: list[str] = Field(default_factory=list)
 
 
 class AppConfig(BaseModel):

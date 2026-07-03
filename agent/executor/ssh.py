@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import shlex
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import asyncssh
 
@@ -105,6 +105,24 @@ class SSHRemoteExecutor:
         cmd = f"head -c {max_bytes} {quoted} 2>/dev/null || echo 'FILE_NOT_FOUND:{path}'"
         result = await self.run(cmd)
         return result.stdout
+
+    async def write_file(self, path: str, content: str) -> CommandResult:
+        import base64
+
+        encoded = base64.b64encode(content.encode("utf-8")).decode("ascii")
+        quoted_path = shlex.quote(path)
+        parent = shlex.quote(str(PurePosixPath(path).parent))
+        inner = (
+            f"mkdir -p {parent} && "
+            f"printf '%s' {shlex.quote(encoded)} | base64 -d > {quoted_path} && "
+            f"test -f {quoted_path}"
+        )
+        return await self.run(inner, timeout=90)
+
+    async def delete_file(self, path: str) -> CommandResult:
+        quoted_path = shlex.quote(path)
+        inner = f"rm -f {quoted_path} && test ! -e {quoted_path}"
+        return await self.run(inner, timeout=60)
 
     async def get_metrics(self) -> HostMetrics:
         cmd = (

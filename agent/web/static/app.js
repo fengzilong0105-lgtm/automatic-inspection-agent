@@ -11,6 +11,7 @@ function dashboard() {
     activeHost: "",
     activeService: "",
     pendingRestart: null,
+    pendingWrite: null,
     sessionId: "web-default",
     showSettings: false,
     settingsForm: {
@@ -946,6 +947,9 @@ function dashboard() {
               finishAssistant(data.message || "请确认是否重启", false);
               this.chatToolStatus = "";
               return;
+            } else if (event === "confirm_write") {
+              this.pendingWrite = data;
+              this.chatToolStatus = "";
             } else if (event === "error") {
               finishAssistant(data || "对话处理失败", false);
               this.chatToolStatus = "";
@@ -954,12 +958,14 @@ function dashboard() {
               const cur = this.messages[assistantIdx];
               finishAssistant(cur.text || "已完成查询。", false);
               this.chatToolStatus = "";
+              await this.syncPendingFileOp();
               return;
             }
           }
         }
         const cur = this.messages[assistantIdx];
         finishAssistant(cur.text || "已完成查询。", false);
+        await this.syncPendingFileOp();
       } catch (e) {
         finishAssistant(`请求失败: ${e.message}`, false);
       } finally {
@@ -978,6 +984,7 @@ function dashboard() {
         });
         this.messages = [];
         this.pendingRestart = null;
+        this.pendingWrite = null;
       } catch (e) {
         alert(`清空失败: ${e.message}`);
       }
@@ -1006,6 +1013,41 @@ function dashboard() {
       this.scrollChatToBottom();
       this.pendingRestart = null;
       await this.refreshSummary(this.activeHost || null);
+    },
+
+    async syncPendingFileOp() {
+      if (this.pendingWrite) return;
+      try {
+        const data = await this.api(`/api/chat/pending-file-op?session_id=${encodeURIComponent(this.sessionId)}`);
+        if (data && data.pending) {
+          this.pendingWrite = data;
+        }
+      } catch {
+        /* ignore */
+      }
+    },
+
+    async confirmWrite() {
+      if (!this.pendingWrite) return;
+      const opId = this.pendingWrite.op_id || this.pendingWrite.write_id;
+      const result = await this.api("/api/chat/confirm-write", {
+        method: "POST",
+        body: JSON.stringify({
+          session_id: this.sessionId,
+          write_id: opId,
+          op_id: opId,
+        }),
+      });
+      const path = this.pendingWrite.path || "远程文件";
+      const action = this.pendingWrite.action === "delete" ? "删除" : "写入";
+      this.messages.push({
+        role: "assistant",
+        text: result.success
+          ? `${action}成功: ${path}\n${result.stdout || ""}`
+          : `${action}失败 (${path}): ${result.stderr || result.stdout || "未知错误"}`,
+      });
+      this.scrollChatToBottom();
+      this.pendingWrite = null;
     },
   };
 }
