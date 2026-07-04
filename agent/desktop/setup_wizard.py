@@ -31,6 +31,7 @@ from agent.config_mgr.setup import (
 from agent.desktop.async_call import AsyncCall
 from agent.desktop.constants import UNCHANGED
 from agent.desktop.widgets.card import Card
+from agent.desktop.widgets.word_wrap_label import WordWrapLabel
 from agent.models import ServiceConfig
 from agent.brand import PRODUCT_NAME
 from agent.desktop.assets import load_app_icon
@@ -289,6 +290,10 @@ class FeishuPage(QWizardPage):
         self.app_secret.setEchoMode(QLineEdit.EchoMode.Password)
         self.chat_id = QLineEdit()
         self.result = _make_result_box()
+        self.bot_command_enabled = QCheckBox("启用飞书 @机器人 指令")
+        self.bot_command_chat_id = QLineEdit()
+        self.bot_command_chat_id.setPlaceholderText("留空则与告警 Chat ID 相同")
+        self.bot_require_at_mention = QCheckBox("仅 @机器人 时响应")
 
         for field in (self.app_id, self.app_secret, self.chat_id, self.bot_command_chat_id):
             _style_field(field)
@@ -298,20 +303,22 @@ class FeishuPage(QWizardPage):
         form.addRow("App ID", self.app_id)
         form.addRow("App Secret", self.app_secret)
         form.addRow("告警 Chat ID", self.chat_id)
-        bot_hint = QLabel("群内 @机器人 只读指令（可选，需在开放平台配置长连接）")
+
+        bot_hint = WordWrapLabel("群内 @机器人 只读指令（可选，需在开放平台配置长连接）")
         bot_hint.setObjectName("mutedText")
-        bot_hint.setWordWrap(True)
-        self.bot_command_enabled = QCheckBox("启用飞书 @机器人 指令")
-        self.bot_command_chat_id = QLineEdit()
-        self.bot_command_chat_id.setPlaceholderText("留空则与告警 Chat ID 相同")
-        self.bot_require_at_mention = QCheckBox("仅 @机器人 时响应")
-        form.addRow("", bot_hint)
-        form.addRow("", self.bot_command_enabled)
-        form.addRow("指令群 Chat ID", self.bot_command_chat_id)
-        form.addRow("", self.bot_require_at_mention)
+
+        bot_form = QFormLayout()
+        _style_form(bot_form)
+        bot_form.addRow("", self.bot_command_enabled)
+        bot_form.addRow("指令群 Chat ID", self.bot_command_chat_id)
+        bot_form.addRow("", self.bot_require_at_mention)
 
         form_card = Card(padding=20)
         form_card.content_layout.addLayout(form)
+        form_card.content_layout.addSpacing(4)
+        form_card.content_layout.addWidget(bot_hint)
+        form_card.content_layout.addSpacing(8)
+        form_card.content_layout.addLayout(bot_form)
 
         test_btn = QPushButton("发送测试消息")
         test_btn.setObjectName("primaryButton")

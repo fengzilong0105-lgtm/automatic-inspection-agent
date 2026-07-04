@@ -5,12 +5,15 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QFormLayout,
+    QFrame,
     QGridLayout,
     QHBoxLayout,
     QHeaderView,
     QLabel,
     QLineEdit,
     QPushButton,
+    QScrollArea,
+    QSizePolicy,
     QTableWidget,
     QTableWidgetItem,
     QTextEdit,
@@ -22,6 +25,8 @@ from agent.config_mgr.setup import FeishuBotSetupPayload, FeishuSetupPayload, LL
 from agent.desktop.async_call import AsyncCall
 from agent.desktop.constants import UNCHANGED
 from agent.desktop.widgets.card import Card
+from agent.desktop.widgets.form_rows import labeled_field_row, style_input
+from agent.desktop.widgets.word_wrap_label import WordWrapLabel
 from agent.services.agent_service import AgentService
 
 
@@ -30,19 +35,29 @@ class SettingsPage(QWidget):
         super().__init__(parent)
         self.service = service
 
-        outer = QVBoxLayout(self)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+
+        body = QWidget()
+        outer = QVBoxLayout(body)
         outer.setContentsMargins(12, 12, 12, 12)
         outer.setSpacing(12)
 
+        page_layout = QVBoxLayout(self)
+        page_layout.setContentsMargins(0, 0, 0, 0)
+        page_layout.addWidget(scroll)
+        scroll.setWidget(body)
+
         grid = QGridLayout()
         grid.setSpacing(12)
+        grid.setColumnStretch(0, 1)
+        grid.setColumnStretch(1, 1)
 
         llm_card = Card()
         llm_title = QLabel("大模型")
         llm_title.setObjectName("sectionTitle")
-        llm_form = QFormLayout()
-        llm_form.setSpacing(10)
-        llm_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
         self.provider = QComboBox()
         self.provider.addItems(["openai", "ollama"])
         self.base_url = QLineEdit()
@@ -50,48 +65,108 @@ class SettingsPage(QWidget):
         self.api_key = QLineEdit()
         self.api_key.setEchoMode(QLineEdit.EchoMode.Password)
         self.ollama_url = QLineEdit("http://localhost:11434")
-        llm_form.addRow("Provider", self.provider)
-        llm_form.addRow("API Base URL", self.base_url)
-        llm_form.addRow("模型", self.model)
-        llm_form.addRow("API Key", self.api_key)
-        llm_form.addRow("Ollama 地址", self.ollama_url)
+        for field in (self.base_url, self.model, self.api_key, self.ollama_url):
+            style_input(field)
+        style_input(self.provider)
+
+        llm_box = QVBoxLayout()
+        llm_box.setSpacing(12)
+        llm_box.setContentsMargins(0, 0, 0, 0)
+        llm_box.addLayout(labeled_field_row("Provider", self.provider))
+        llm_box.addLayout(labeled_field_row("API Base URL", self.base_url))
+        llm_box.addLayout(labeled_field_row("模型", self.model))
+        llm_box.addLayout(labeled_field_row("API Key", self.api_key))
+        llm_box.addLayout(labeled_field_row("Ollama 地址", self.ollama_url))
+
+        llm_card.content_layout.setSpacing(12)
         llm_card.content_layout.addWidget(llm_title)
-        llm_card.content_layout.addLayout(llm_form)
+        llm_card.content_layout.addLayout(llm_box)
+        llm_card.content_layout.addStretch(1)
+
+        btn_row = QHBoxLayout()
+        save_btn = QPushButton("保存设置")
+        save_btn.setObjectName("primaryButton")
+        test_llm_btn = QPushButton("测试 LLM")
+        test_llm_btn.setObjectName("secondaryButton")
+        test_feishu_btn = QPushButton("测试飞书")
+        test_feishu_btn.setObjectName("secondaryButton")
+        btn_row.addWidget(save_btn)
+        btn_row.addWidget(test_llm_btn)
+        btn_row.addWidget(test_feishu_btn)
+        btn_row.addStretch()
+        self.result = QTextEdit()
+        self.result.setReadOnly(True)
+        self.result.setMinimumHeight(72)
+        self.result.setMaximumHeight(96)
+        llm_card.content_layout.addLayout(btn_row)
+        llm_card.content_layout.addWidget(self.result)
+        llm_card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
         feishu_card = Card()
         feishu_title = QLabel("飞书")
         feishu_title.setObjectName("sectionTitle")
-        feishu_form = QFormLayout()
-        feishu_form.setSpacing(10)
-        feishu_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+
         self.feishu_enabled = QCheckBox("启用飞书告警")
         self.app_id = QLineEdit()
         self.app_secret = QLineEdit()
         self.app_secret.setEchoMode(QLineEdit.EchoMode.Password)
         self.chat_id = QLineEdit()
-        bot_hint = QLabel(
-            "群内 @机器人 只读指令（需在开放平台配置长连接）。"
-            "与「启用飞书告警」独立，可不勾选告警仅开指令。"
-        )
-        bot_hint.setObjectName("mutedText")
-        bot_hint.setWordWrap(True)
         self.bot_command_enabled = QCheckBox("启用飞书 @机器人 指令")
         self.bot_command_chat_id = QLineEdit()
         self.bot_command_chat_id.setPlaceholderText("留空则与告警 Chat ID 相同")
         self.bot_require_at_mention = QCheckBox("仅 @机器人 时响应")
-        feishu_form.addRow("", self.feishu_enabled)
-        feishu_form.addRow("App ID", self.app_id)
-        feishu_form.addRow("App Secret", self.app_secret)
-        feishu_form.addRow("告警 Chat ID", self.chat_id)
-        feishu_form.addRow("", bot_hint)
-        feishu_form.addRow("", self.bot_command_enabled)
-        feishu_form.addRow("指令群 Chat ID", self.bot_command_chat_id)
-        feishu_form.addRow("", self.bot_require_at_mention)
-        feishu_card.content_layout.addWidget(feishu_title)
-        feishu_card.content_layout.addLayout(feishu_form)
+        for field in (self.app_id, self.app_secret, self.chat_id, self.bot_command_chat_id):
+            style_input(field)
 
-        grid.addWidget(llm_card, 0, 0)
-        grid.addWidget(feishu_card, 0, 1)
+        feishu_basic_box = QVBoxLayout()
+        feishu_basic_box.setSpacing(12)
+        feishu_basic_box.setContentsMargins(0, 0, 0, 0)
+        feishu_basic_box.addWidget(self.feishu_enabled)
+        feishu_basic_box.addLayout(labeled_field_row("App ID", self.app_id))
+        feishu_basic_box.addLayout(labeled_field_row("App Secret", self.app_secret))
+        feishu_basic_box.addLayout(labeled_field_row("告警 Chat ID", self.chat_id))
+
+        bot_hint = WordWrapLabel(
+            "群内 @机器人 只读指令（需在开放平台配置长连接）。"
+            "与「启用飞书告警」独立，可不勾选告警仅开指令。"
+        )
+        bot_hint.setObjectName("mutedText")
+        self._bot_hint = bot_hint
+
+        feishu_bot_box = QVBoxLayout()
+        feishu_bot_box.setSpacing(12)
+        feishu_bot_box.setContentsMargins(0, 0, 0, 0)
+        feishu_bot_box.addWidget(self.bot_command_enabled)
+        feishu_bot_box.addLayout(labeled_field_row("指令群 Chat ID", self.bot_command_chat_id))
+        feishu_bot_box.addWidget(self.bot_require_at_mention)
+
+        feishu_card.content_layout.setSpacing(12)
+        feishu_card.content_layout.addWidget(feishu_title)
+        feishu_card.content_layout.addLayout(feishu_basic_box)
+        feishu_card.content_layout.addSpacing(6)
+        feishu_card.content_layout.addWidget(bot_hint)
+        feishu_card.content_layout.addSpacing(10)
+        feishu_card.content_layout.addLayout(feishu_bot_box)
+        feishu_card.content_layout.addStretch(1)
+        feishu_card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+
+        llm_wrap = QWidget()
+        llm_wrap.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        llm_wrap_layout = QVBoxLayout(llm_wrap)
+        llm_wrap_layout.setContentsMargins(0, 0, 0, 0)
+        llm_wrap_layout.setSpacing(0)
+        llm_wrap_layout.addWidget(llm_card, 1)
+
+        feishu_wrap = QWidget()
+        feishu_wrap.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        feishu_wrap_layout = QVBoxLayout(feishu_wrap)
+        feishu_wrap_layout.setContentsMargins(0, 0, 0, 0)
+        feishu_wrap_layout.setSpacing(0)
+        feishu_wrap_layout.addWidget(feishu_card, 1)
+
+        grid.addWidget(llm_wrap, 0, 0)
+        grid.addWidget(feishu_wrap, 0, 1)
+        grid.setRowStretch(0, 1)
         outer.addLayout(grid)
 
         memory_card = Card()
@@ -133,26 +208,6 @@ class SettingsPage(QWidget):
         memory_card.content_layout.addLayout(memory_form)
         outer.addWidget(memory_card)
 
-        action_card = Card()
-        btn_row = QHBoxLayout()
-        save_btn = QPushButton("保存设置")
-        save_btn.setObjectName("primaryButton")
-        test_llm_btn = QPushButton("测试 LLM")
-        test_llm_btn.setObjectName("secondaryButton")
-        test_feishu_btn = QPushButton("测试飞书")
-        test_feishu_btn.setObjectName("secondaryButton")
-        btn_row.addWidget(save_btn)
-        btn_row.addWidget(test_llm_btn)
-        btn_row.addWidget(test_feishu_btn)
-        btn_row.addStretch()
-        self.result = QTextEdit()
-        self.result.setReadOnly(True)
-        self.result.setMaximumHeight(72)
-        action_card.content_layout.addLayout(btn_row)
-        action_card.content_layout.addWidget(self.result)
-        outer.addWidget(action_card)
-        outer.addStretch()
-
         save_btn.clicked.connect(self.save_settings)
         test_llm_btn.clicked.connect(self.test_llm)
         test_feishu_btn.clicked.connect(self.test_feishu)
@@ -171,6 +226,14 @@ class SettingsPage(QWidget):
 
         self.load_form()
         self.load_memory()
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        self._bot_hint._sync_height()
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._bot_hint._sync_height()
 
     def load_form(self) -> None:
         data = self.service.setup_form()
