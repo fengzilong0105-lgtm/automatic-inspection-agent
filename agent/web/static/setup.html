@@ -98,6 +98,20 @@
         </label>
       </div>
       <p class="muted">请先将机器人拉入告警群，并开通 <code>im:message</code> 发消息权限。</p>
+      <h3 class="muted" style="margin-top:1rem;font-size:0.95rem;">群内 @机器人 指令（可选）</h3>
+      <div class="form-grid">
+        <label class="checkbox full">
+          <input type="checkbox" x-model="form.feishu.bot.command_enabled" /> 启用飞书 @机器人 只读指令
+        </label>
+        <label class="full">
+          指令群 Chat ID
+          <input x-model="form.feishu.bot.command_chat_id" placeholder="留空则与告警 Chat ID 相同" />
+        </label>
+        <label class="checkbox full">
+          <input type="checkbox" x-model="form.feishu.bot.require_at_mention" /> 仅 @机器人 时响应
+        </label>
+      </div>
+      <p class="muted">指令功能需在飞书开放平台配置长连接，详见 <code>docs/feishu-bot-setup.md</code>。</p>
       <div class="actions">
         <button @click="step = 2">上一步</button>
         <button @click="testFeishu()" :disabled="testing">测试飞书告警</button>

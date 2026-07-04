@@ -158,6 +158,37 @@ class ChatStore:
             await db.commit()
         return conv
 
+    async def ensure_conversation(self, conversation_id: str, title: str | None = None) -> str:
+        try:
+            await self.get_conversation(conversation_id)
+            return conversation_id
+        except KeyError:
+            pass
+
+        now = _utc_now()
+        context_limit = await resolve_context_limit()
+        conv_title = (title or "新对话").strip() or "新对话"
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                """
+                INSERT INTO conversations (
+                    id, title, created_at, updated_at, token_count, context_limit, summary, status
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    conversation_id,
+                    conv_title,
+                    now,
+                    now,
+                    0,
+                    context_limit,
+                    None,
+                    "active",
+                ),
+            )
+            await db.commit()
+        return conversation_id
+
     async def list_conversations(self, limit: int = 100) -> list[Conversation]:
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row

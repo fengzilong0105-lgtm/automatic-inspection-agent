@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 from agent.models import HostConfig, SSHConfig
 from agent.settings import UNCHANGED_SECRET, Settings, get_settings, mask_secret
 
@@ -103,7 +105,16 @@ def set_active_host(host_id: str, settings: Settings | None = None) -> str:
 def _reset_ssh_pool() -> None:
     from agent.executor.ssh import get_executor_registry
 
-    import asyncio
+    try:
+        from agent.runtime.background import get_runtime
+
+        runtime = get_runtime()
+        loop = runtime._loop
+        if loop and loop.is_running():
+            asyncio.run_coroutine_threadsafe(get_executor_registry().close_all(), loop)
+            return
+    except Exception:
+        pass
 
     try:
         loop = asyncio.get_event_loop()

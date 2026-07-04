@@ -22,7 +22,13 @@ function dashboard() {
     showSettings: false,
     settingsForm: {
       llm: { provider: "openai", base_url: "", model: "", api_key: "", ollama_base_url: "http://localhost:11434", api_key_masked: null },
-      feishu: { enabled: false, app_id: "", app_secret: "", alert_chat_id: "" },
+      feishu: {
+        enabled: false,
+        app_id: "",
+        app_secret: "",
+        alert_chat_id: "",
+        bot: { command_enabled: false, command_chat_id: "", require_at_mention: true },
+      },
     },
     hostEditor: null,
     hostEditorResult: "",
@@ -626,7 +632,16 @@ function dashboard() {
     async loadSettingsForm() {
       const data = await this.api("/api/setup/form");
       this.settingsForm.llm = { ...data.llm, api_key: "" };
-      this.settingsForm.feishu = { ...data.feishu, app_secret: "" };
+      this.settingsForm.feishu = {
+        ...data.feishu,
+        app_secret: "",
+        bot: {
+          command_enabled: false,
+          command_chat_id: "",
+          require_at_mention: true,
+          ...(data.feishu?.bot || {}),
+        },
+      };
       await this.loadKnowledge();
       try {
         const memorySettings = await this.api("/api/chat/memory-settings");

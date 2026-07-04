@@ -59,7 +59,7 @@ class SSHRemoteExecutor:
             await self._conn.wait_closed()
             self._conn = None
 
-    async def run(self, cmd: str, timeout: int = 60) -> CommandResult:
+    async def run(self, cmd: str, timeout: int = 60, *, _retry: bool = True) -> CommandResult:
         if self._run_lock is None:
             self._run_lock = asyncio.Lock()
         async with self._run_lock:
@@ -74,6 +74,16 @@ class SSHRemoteExecutor:
                 )
             except TimeoutError:
                 return CommandResult(stdout="", stderr=f"Command timed out after {timeout}s", exit_code=124)
+            except (
+                asyncssh.misc.ChannelOpenError,
+                asyncssh.misc.ConnectionLost,
+                asyncssh.DisconnectError,
+                OSError,
+            ):
+                self._conn = None
+                if _retry:
+                    return await self.run(cmd, timeout=timeout, _retry=False)
+                return CommandResult(stdout="", stderr="SSH connection closed", exit_code=255)
 
     async def test_connection(self) -> CommandResult:
         if self.host.ssh.use_sudo_su:
@@ -125,6 +135,14 @@ class SSHRemoteExecutor:
         return await self.run(inner, timeout=60)
 
     async def get_metrics(self) -> HostMetrics:
+        metrics = await self._get_metrics_psutil()
+        if metrics.cpu_percent is None and metrics.memory_percent is None:
+            fallback = await self._get_metrics_proc_fallback()
+            if fallback.cpu_percent is not None or fallback.memory_percent is not None:
+                return fallback
+        return metrics
+
+    async def _get_metrics_psutil(self) -> HostMetrics:
         cmd = (
             "python3 - <<'PY'\n"
             "import json\n"
@@ -140,6 +158,48 @@ class SSHRemoteExecutor:
             "PY"
         )
         result = await self.run(cmd, timeout=30)
+        metrics = HostMetrics(host_id=self.host_id, detail=result.stdout or result.stderr)
+        if result.stdout:
+            import json
+
+            try:
+                data = json.loads(result.stdout)
+                metrics.cpu_percent = data.get("cpu_percent")
+                metrics.memory_percent = data.get("memory_percent")
+                metrics.disk_percent = data.get("disk_percent")
+                metrics.load_avg = data.get("load_avg")
+                metrics.detail = data.get("detail", "")
+            except json.JSONDecodeError:
+                metrics.detail = result.stdout
+        return metrics
+
+    async def _get_metrics_proc_fallback(self) -> HostMetrics:
+        """Collect host metrics via /proc + free + df when psutil is unavailable."""
+        cmd = (
+            "python3 - <<'PY'\n"
+            "import json, time, subprocess\n"
+            "def cpu_pct():\n"
+            "    def snap():\n"
+            "        parts = open('/proc/stat').readline().split()[1:]\n"
+            "        vals = list(map(int, parts))\n"
+            "        return vals[3], sum(vals)\n"
+            "    i1, t1 = snap(); time.sleep(1); i2, t2 = snap()\n"
+            "    dt, di = t2 - t1, i2 - i1\n"
+            "    return round((dt - di) / dt * 100, 1) if dt else None\n"
+            "load = open('/proc/loadavg').read().split()[:3]\n"
+            "mem = subprocess.check_output(['free', '-b'], text=True).splitlines()[1].split()\n"
+            "mem_total, mem_used = int(mem[1]), int(mem[2])\n"
+            "disk = subprocess.check_output(['df', '-P', '/'], text=True).splitlines()[1].split()\n"
+            "print(json.dumps({\n"
+            "    'cpu_percent': cpu_pct(),\n"
+            "    'memory_percent': round(mem_used / mem_total * 100, 1) if mem_total else None,\n"
+            "    'disk_percent': float(disk[4].rstrip('%')) if len(disk) > 4 else None,\n"
+            "    'load_avg': ' '.join(load),\n"
+            "    'detail': 'fallback:/proc+free+df (psutil unavailable)',\n"
+            "}))\n"
+            "PY"
+        )
+        result = await self.run(cmd, timeout=35)
         metrics = HostMetrics(host_id=self.host_id, detail=result.stdout or result.stderr)
         if result.stdout:
             import json

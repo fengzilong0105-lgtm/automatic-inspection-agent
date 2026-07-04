@@ -93,6 +93,14 @@ class BackgroundRuntime:
         await get_knowledge_store().init()
         await get_checkpointer()
         await self.chat_agent._ensure_checkpointer()
+
+        from agent.feishu.runner import start_feishu_bot_if_enabled
+
+        threading.Thread(
+            target=start_feishu_bot_if_enabled,
+            name="feishu-bot-bootstrap",
+            daemon=True,
+        ).start()
         logger.info("Background runtime started")
 
     async def _async_shutdown(self) -> None:

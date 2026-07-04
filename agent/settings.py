@@ -174,6 +174,11 @@ class Settings:
                 "alert_chat_id": feishu.alert_chat_id,
                 "app_secret_set": bool(feishu.app_secret),
                 "app_secret_masked": mask_secret(feishu.app_secret),
+                "bot": {
+                    "command_enabled": feishu.bot.command_enabled,
+                    "command_chat_id": feishu.bot.command_chat_id,
+                    "require_at_mention": feishu.bot.require_at_mention,
+                },
             },
             "web": {
                 "port": self._config.web.port,

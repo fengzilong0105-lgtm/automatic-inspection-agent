@@ -279,7 +279,7 @@
         <button @click="testLlmSettings()">测试 LLM</button>
         <pre class="result" x-show="settingsLlmResult" x-text="settingsLlmResult"></pre>
 
-        <h3>飞书告警</h3>
+        <h3>飞书</h3>
         <div class="form-grid">
           <label class="checkbox full">
             <input type="checkbox" x-model="settingsForm.feishu.enabled" /> 启用飞书告警
@@ -289,6 +289,19 @@
           <label class="full">
             App Secret
             <input type="password" x-model="settingsForm.feishu.app_secret" placeholder="留空保持不变" />
+          </label>
+        </div>
+        <p class="muted">群内 @机器人 只读指令（需在开放平台配置长连接）。与「启用飞书告警」独立，可不勾选告警仅开指令。</p>
+        <div class="form-grid">
+          <label class="checkbox full">
+            <input type="checkbox" x-model="settingsForm.feishu.bot.command_enabled" /> 启用飞书 @机器人 指令
+          </label>
+          <label class="full">
+            指令群 Chat ID
+            <input x-model="settingsForm.feishu.bot.command_chat_id" placeholder="留空则与告警 Chat ID 相同" />
+          </label>
+          <label class="checkbox full">
+            <input type="checkbox" x-model="settingsForm.feishu.bot.require_at_mention" /> 仅 @机器人 时响应
           </label>
         </div>
         <button @click="testFeishuSettings()">测试飞书告警</button>

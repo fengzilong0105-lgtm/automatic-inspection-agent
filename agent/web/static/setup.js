@@ -15,7 +15,14 @@ function setupWizard() {
     form: {
       host: { id: "prod-01", name: "生产服务器", ssh: { host: "", port: 22, user: "", key_file: "", password: "", use_sudo_su: false, sudo_password: "" } },
       llm: { provider: "openai", base_url: "https://api.openai.com/v1", model: "gpt-4o-mini", api_key: "", temperature: 0.2, ollama_base_url: "http://localhost:11434", api_key_masked: null },
-      feishu: { enabled: false, app_id: "", app_secret: "", alert_chat_id: "", app_secret_masked: null },
+      feishu: {
+        enabled: false,
+        app_id: "",
+        app_secret: "",
+        alert_chat_id: "",
+        app_secret_masked: null,
+        bot: { command_enabled: false, command_chat_id: "", require_at_mention: true },
+      },
     },
 
     async init() {
@@ -31,7 +38,17 @@ function setupWizard() {
       this.form.host.ssh.use_sudo_su = !!data.host.ssh.use_sudo_su;
       this.form.host.ssh.sudo_password = "";
       this.form.llm = { ...this.form.llm, ...data.llm, api_key: "" };
-      this.form.feishu = { ...this.form.feishu, ...data.feishu, app_secret: "" };
+      this.form.feishu = {
+        ...this.form.feishu,
+        ...data.feishu,
+        app_secret: "",
+        bot: {
+          command_enabled: false,
+          command_chat_id: "",
+          require_at_mention: true,
+          ...(data.feishu?.bot || {}),
+        },
+      };
     },
 
     async api(path, options = {}) {

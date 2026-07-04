@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from agent.config_mgr.setup import FeishuSetupPayload, LLMSetupPayload
+from agent.config_mgr.setup import FeishuBotSetupPayload, FeishuSetupPayload, LLMSetupPayload
 from agent.desktop.async_call import AsyncCall
 from agent.desktop.constants import UNCHANGED
 from agent.desktop.widgets.card import Card
@@ -59,19 +59,34 @@ class SettingsPage(QWidget):
         llm_card.content_layout.addLayout(llm_form)
 
         feishu_card = Card()
-        feishu_title = QLabel("飞书告警")
+        feishu_title = QLabel("飞书")
         feishu_title.setObjectName("sectionTitle")
         feishu_form = QFormLayout()
         feishu_form.setSpacing(10)
+        feishu_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
         self.feishu_enabled = QCheckBox("启用飞书告警")
         self.app_id = QLineEdit()
         self.app_secret = QLineEdit()
         self.app_secret.setEchoMode(QLineEdit.EchoMode.Password)
         self.chat_id = QLineEdit()
+        bot_hint = QLabel(
+            "群内 @机器人 只读指令（需在开放平台配置长连接）。"
+            "与「启用飞书告警」独立，可不勾选告警仅开指令。"
+        )
+        bot_hint.setObjectName("mutedText")
+        bot_hint.setWordWrap(True)
+        self.bot_command_enabled = QCheckBox("启用飞书 @机器人 指令")
+        self.bot_command_chat_id = QLineEdit()
+        self.bot_command_chat_id.setPlaceholderText("留空则与告警 Chat ID 相同")
+        self.bot_require_at_mention = QCheckBox("仅 @机器人 时响应")
         feishu_form.addRow("", self.feishu_enabled)
         feishu_form.addRow("App ID", self.app_id)
         feishu_form.addRow("App Secret", self.app_secret)
-        feishu_form.addRow("Chat ID", self.chat_id)
+        feishu_form.addRow("告警 Chat ID", self.chat_id)
+        feishu_form.addRow("", bot_hint)
+        feishu_form.addRow("", self.bot_command_enabled)
+        feishu_form.addRow("指令群 Chat ID", self.bot_command_chat_id)
+        feishu_form.addRow("", self.bot_require_at_mention)
         feishu_card.content_layout.addWidget(feishu_title)
         feishu_card.content_layout.addLayout(feishu_form)
 
@@ -170,6 +185,12 @@ class SettingsPage(QWidget):
         self.feishu_enabled.setChecked(bool(feishu.get("enabled")))
         self.app_id.setText(feishu.get("app_id", ""))
         self.chat_id.setText(feishu.get("alert_chat_id", ""))
+        bot = feishu.get("bot") or {}
+        self.bot_command_enabled.setChecked(bool(bot.get("command_enabled")))
+        self.bot_command_chat_id.setText(bot.get("command_chat_id", ""))
+        self.bot_require_at_mention.setChecked(
+            bot.get("require_at_mention", True) if bot else True
+        )
         try:
             memory_settings = self.service.get_memory_settings()
             self.auto_extract.blockSignals(True)
@@ -250,14 +271,18 @@ class SettingsPage(QWidget):
             app_id=self.app_id.text().strip(),
             app_secret=self.app_secret.text().strip() or UNCHANGED,
             alert_chat_id=self.chat_id.text().strip(),
+            bot=FeishuBotSetupPayload(
+                command_enabled=self.bot_command_enabled.isChecked(),
+                command_chat_id=self.bot_command_chat_id.text().strip(),
+                require_at_mention=self.bot_require_at_mention.isChecked(),
+            ),
         )
 
     def save_settings(self) -> None:
-        try:
-            self.service.save_llm_feishu(self._llm_payload(), self._feishu_payload())
-            self.result.setPlainText("设置已保存")
-        except Exception as exc:
-            self.result.setPlainText(f"保存失败: {exc}")
+        self.result.setPlainText("保存中…")
+        self._bridge.submit(
+            self.service.save_llm_feishu_async(self._llm_payload(), self._feishu_payload())
+        )
 
     def test_llm(self) -> None:
         self.result.setPlainText("测试中…")

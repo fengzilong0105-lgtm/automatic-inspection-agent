@@ -5,7 +5,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from agent.config_mgr.hosts import build_host_config
-from agent.models import FeishuConfig, HostConfig, LLMDefaultConfig, SSHConfig
+from agent.models import FeishuBotConfig, FeishuConfig, HostConfig, LLMDefaultConfig, SSHConfig
 from agent.settings import UNCHANGED_SECRET, get_settings
 
 
@@ -35,11 +35,18 @@ class LLMSetupPayload(BaseModel):
     ollama_base_url: str = "http://localhost:11434"
 
 
+class FeishuBotSetupPayload(BaseModel):
+    command_enabled: bool = False
+    command_chat_id: str = ""
+    require_at_mention: bool = True
+
+
 class FeishuSetupPayload(BaseModel):
     enabled: bool = False
     app_id: str = ""
     app_secret: str | None = None
     alert_chat_id: str = ""
+    bot: FeishuBotSetupPayload = Field(default_factory=FeishuBotSetupPayload)
 
 
 class SetupSavePayload(BaseModel):
@@ -59,6 +66,7 @@ def apply_setup_payload(payload: SetupSavePayload) -> None:
 
     existing_host = next((h for h in config.hosts if h.id == payload.host.id), None)
     host_config = build_host_config(payload.host, existing_host)
+    ssh_changed = existing_host is None or existing_host.ssh != host_config.ssh
 
     hosts = list(config.hosts)
     replaced = False
@@ -101,6 +109,11 @@ def apply_setup_payload(payload: SetupSavePayload) -> None:
             app_id=payload.feishu.app_id,
             app_secret=app_secret or "",
             alert_chat_id=payload.feishu.alert_chat_id,
+            bot=FeishuBotConfig(
+                command_enabled=payload.feishu.bot.command_enabled,
+                command_chat_id=payload.feishu.bot.command_chat_id,
+                require_at_mention=payload.feishu.bot.require_at_mention,
+            ),
         )
 
     updated = config.model_copy(
@@ -114,9 +127,67 @@ def apply_setup_payload(payload: SetupSavePayload) -> None:
     )
     settings.save(updated)
 
-    from agent.config_mgr.hosts import _reset_ssh_pool
+    if ssh_changed:
+        from agent.config_mgr.hosts import _reset_ssh_pool
 
-    _reset_ssh_pool()
+        _reset_ssh_pool()
+
+    if payload.feishu is not None:
+        from agent.feishu.runner import schedule_feishu_bot_restart
+
+        schedule_feishu_bot_restart()
+
+
+def apply_llm_feishu_payload(llm: LLMSetupPayload, feishu: FeishuSetupPayload | None) -> None:
+    """Update LLM / Feishu settings without touching SSH connections."""
+    settings = get_settings()
+    config = settings.config
+
+    llm_payload = llm
+    existing_llm = config.llm.default
+    api_key = llm_payload.api_key
+    if not api_key or api_key == UNCHANGED_SECRET:
+        api_key = existing_llm.api_key
+
+    llm_default = LLMDefaultConfig(
+        provider=llm_payload.provider,  # type: ignore[arg-type]
+        base_url=llm_payload.base_url,
+        api_key=api_key or "",
+        model=llm_payload.model,
+        temperature=llm_payload.temperature,
+        max_tokens=llm_payload.max_tokens,
+    )
+    llm_config = config.llm.model_copy(
+        update={
+            "default": llm_default,
+            "ollama_base_url": llm_payload.ollama_base_url,
+        }
+    )
+
+    feishu_config = config.feishu
+    if feishu:
+        app_secret = feishu.app_secret
+        if not app_secret or app_secret == UNCHANGED_SECRET:
+            app_secret = config.feishu.app_secret
+        feishu_config = FeishuConfig(
+            enabled=feishu.enabled,
+            app_id=feishu.app_id,
+            app_secret=app_secret or "",
+            alert_chat_id=feishu.alert_chat_id,
+            bot=FeishuBotConfig(
+                command_enabled=feishu.bot.command_enabled,
+                command_chat_id=feishu.bot.command_chat_id,
+                require_at_mention=feishu.bot.require_at_mention,
+            ),
+        )
+
+    updated = config.model_copy(update={"llm": llm_config, "feishu": feishu_config})
+    settings.save(updated)
+
+    if feishu is not None:
+        from agent.feishu.runner import schedule_feishu_bot_restart
+
+        schedule_feishu_bot_restart()
 
 
 async def test_ssh_config(ssh: SSHSetupPayload, existing: HostConfig | None = None) -> dict[str, Any]:

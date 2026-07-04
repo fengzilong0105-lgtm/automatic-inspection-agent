@@ -28,7 +28,7 @@ Windows 跳板机部署的 **SteadyOps** 运维桌面应用。通过 SSH 管理 
 
 | 组件 | 用途 |
 |------|------|
-| 飞书应用 | 告警推送（需 `app_id`、`app_secret`、群 `chat_id`） |
+| 飞书应用 | 告警推送 + **群内 @机器人 只读指令**（见 [飞书机器人接入](docs/feishu-bot-setup.md)） |
 | SSH 私钥文件 | 推荐密钥登录；也支持密码登录 |
 | Bearer Token | 配置 `web.auth_token` 后 API 需带 `Authorization: Bearer <token>` |
 

@@ -45,6 +45,10 @@ feishu:
   app_id: ""
   app_secret: ""
   alert_chat_id: ""
+  bot:
+    command_enabled: false   # 启用飞书 @机器人 只读指令
+    command_chat_id: ""     # 留空则使用 alert_chat_id
+    require_at_mention: true
 
 web:
   enabled: true

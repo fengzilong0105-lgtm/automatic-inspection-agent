@@ -166,6 +166,10 @@ def create_app() -> FastAPI:
         await get_checkpointer()
         await chat_agent._ensure_checkpointer()
 
+        from agent.feishu.runner import start_feishu_bot_if_enabled
+
+        start_feishu_bot_if_enabled()
+
     @app.on_event("shutdown")
     async def shutdown() -> None:
         monitor = getattr(app.state, "monitor", None)

@@ -88,11 +88,18 @@ class DiscoveryConfig(BaseModel):
     rescan_interval_hours: int = 0
 
 
+class FeishuBotConfig(BaseModel):
+    command_enabled: bool = False
+    command_chat_id: str = ""
+    require_at_mention: bool = True
+
+
 class FeishuConfig(BaseModel):
     enabled: bool = False
     app_id: str = ""
     app_secret: str = ""
     alert_chat_id: str = ""
+    bot: FeishuBotConfig = Field(default_factory=FeishuBotConfig)
 
 
 class WebConfig(BaseModel):

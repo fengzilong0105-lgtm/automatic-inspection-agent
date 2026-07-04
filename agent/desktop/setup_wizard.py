@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
 )
 
 from agent.config_mgr.setup import (
+    FeishuBotSetupPayload,
     FeishuSetupPayload,
     HostSetupPayload,
     InlineSSHTestPayload,
@@ -289,7 +290,7 @@ class FeishuPage(QWizardPage):
         self.chat_id = QLineEdit()
         self.result = _make_result_box()
 
-        for field in (self.app_id, self.app_secret, self.chat_id):
+        for field in (self.app_id, self.app_secret, self.chat_id, self.bot_command_chat_id):
             _style_field(field)
 
         _style_form(form)
@@ -297,6 +298,17 @@ class FeishuPage(QWizardPage):
         form.addRow("App ID", self.app_id)
         form.addRow("App Secret", self.app_secret)
         form.addRow("告警 Chat ID", self.chat_id)
+        bot_hint = QLabel("群内 @机器人 只读指令（可选，需在开放平台配置长连接）")
+        bot_hint.setObjectName("mutedText")
+        bot_hint.setWordWrap(True)
+        self.bot_command_enabled = QCheckBox("启用飞书 @机器人 指令")
+        self.bot_command_chat_id = QLineEdit()
+        self.bot_command_chat_id.setPlaceholderText("留空则与告警 Chat ID 相同")
+        self.bot_require_at_mention = QCheckBox("仅 @机器人 时响应")
+        form.addRow("", bot_hint)
+        form.addRow("", self.bot_command_enabled)
+        form.addRow("指令群 Chat ID", self.bot_command_chat_id)
+        form.addRow("", self.bot_require_at_mention)
 
         form_card = Card(padding=20)
         form_card.content_layout.addLayout(form)
@@ -323,6 +335,12 @@ class FeishuPage(QWizardPage):
         self.enabled.setChecked(bool(feishu.get("enabled")))
         self.app_id.setText(feishu.get("app_id", ""))
         self.chat_id.setText(feishu.get("alert_chat_id", ""))
+        bot = feishu.get("bot") or {}
+        self.bot_command_enabled.setChecked(bool(bot.get("command_enabled")))
+        self.bot_command_chat_id.setText(bot.get("command_chat_id", ""))
+        self.bot_require_at_mention.setChecked(
+            bot.get("require_at_mention", True) if bot else True
+        )
 
     def build_payload(self) -> FeishuSetupPayload:
         return FeishuSetupPayload(
@@ -330,6 +348,11 @@ class FeishuPage(QWizardPage):
             app_id=self.app_id.text().strip(),
             app_secret=self.app_secret.text().strip() or UNCHANGED,
             alert_chat_id=self.chat_id.text().strip(),
+            bot=FeishuBotSetupPayload(
+                command_enabled=self.bot_command_enabled.isChecked(),
+                command_chat_id=self.bot_command_chat_id.text().strip(),
+                require_at_mention=self.bot_require_at_mention.isChecked(),
+            ),
         )
 
     def test_feishu(self) -> None:

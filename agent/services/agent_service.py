@@ -19,6 +19,7 @@ from agent.config_mgr.setup import (
     SetupSavePayload,
     SSHSetupPayload,
     apply_setup_payload,
+    apply_llm_feishu_payload,
     test_feishu_config,
     test_llm_config,
     test_ssh_config,
@@ -143,29 +144,16 @@ class AgentService:
         return {"deleted": host_id}
 
     def save_llm_feishu(self, llm: LLMSetupPayload, feishu: FeishuSetupPayload | None) -> None:
-        settings = get_settings()
-        if not settings.config.hosts:
-            raise ValueError("请先配置 SSH 主机")
-        host = settings.config.hosts[0]
-        payload = SetupSavePayload(
-            host=HostSetupPayload(
-                id=host.id,
-                name=host.name,
-                ssh=SSHSetupPayload(
-                    host=host.ssh.host,
-                    port=host.ssh.port,
-                    user=host.ssh.user,
-                    key_file=host.ssh.key_file,
-                    password=UNCHANGED_SECRET,
-                    use_sudo_su=host.ssh.use_sudo_su,
-                    sudo_password=UNCHANGED_SECRET,
-                ),
-            ),
-            llm=llm,
-            feishu=feishu,
-            complete=False,
-        )
-        apply_setup_payload(payload)
+        apply_llm_feishu_payload(llm, feishu)
+
+    def save_llm_feishu_async(self, llm: LLMSetupPayload, feishu: FeishuSetupPayload | None):
+        return self._run(self._save_llm_feishu_async(llm, feishu))
+
+    async def _save_llm_feishu_async(
+        self, llm: LLMSetupPayload, feishu: FeishuSetupPayload | None
+    ) -> str:
+        await asyncio.to_thread(apply_llm_feishu_payload, llm, feishu)
+        return "设置已保存"
 
     # --- discovery / services ---
 

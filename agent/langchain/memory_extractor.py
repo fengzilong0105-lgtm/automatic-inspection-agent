@@ -30,6 +30,40 @@ class ExtractedMemories(BaseModel):
     items: list[ExtractedMemoryItem] = Field(default_factory=list)
 
 
+def _coerce_extracted_memories(raw: object) -> ExtractedMemories:
+    if isinstance(raw, ExtractedMemories):
+        return raw
+    if isinstance(raw, dict):
+        if "items" in raw:
+            return ExtractedMemories.model_validate(raw)
+        if raw.get("category") or raw.get("content") or raw.get("value"):
+            raw = [raw]
+        else:
+            return ExtractedMemories()
+    if isinstance(raw, list):
+        items: list[ExtractedMemoryItem] = []
+        for entry in raw:
+            if not isinstance(entry, dict):
+                continue
+            category = entry.get("category") or entry.get("type") or "ops_note"
+            if category not in {"preference", "service_fact", "ops_note"}:
+                category = "ops_note"
+            key = str(entry.get("key") or category).strip()[:128]
+            value = str(entry.get("value") or entry.get("content") or "").strip()
+            if not value:
+                continue
+            items.append(
+                ExtractedMemoryItem(
+                    category=category,  # type: ignore[arg-type]
+                    key=key or "note",
+                    value=value[:4000],
+                    confidence=float(entry.get("confidence", 0.8)),
+                )
+            )
+        return ExtractedMemories(items=items)
+    return ExtractedMemories()
+
+
 def parse_rememberable_markers(text: str) -> list[dict]:
     """Parse assistant-marked memories like 【可记住】service_fact/road_control.log_path: /path."""
     suggestions: list[dict] = []
@@ -73,7 +107,7 @@ async def auto_extract_memories(
     try:
         llm = get_llm("chat_qa")
         structured = llm.with_structured_output(ExtractedMemories)
-        result: ExtractedMemories = await structured.ainvoke(
+        raw = await structured.ainvoke(
             [
                 {
                     "role": "system",
@@ -82,6 +116,7 @@ async def auto_extract_memories(
                 {"role": "user", "content": prompt},
             ]
         )
+        result = _coerce_extracted_memories(raw)
     except Exception as exc:
         logger.warning("auto_extract_memories failed: %s", exc)
         return []
