@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from agent.brand import PRODUCT_NAME
 from agent.feishu.client import FeishuAPIError, send_feishu_text
 from agent.settings import get_settings
 
@@ -40,7 +41,7 @@ class FeishuNotifier:
 
     async def send_incident_card(self, incident: Any) -> None:
         text = (
-            f"【服务巡检告警】[{incident.severity.value}] {incident.title}\n"
+            f"【{PRODUCT_NAME}告警】[{incident.severity.value}] {incident.title}\n"
             f"服务: {incident.service_id}\n"
             f"主机: {incident.host_id}\n"
             f"摘要: {incident.summary}\n"

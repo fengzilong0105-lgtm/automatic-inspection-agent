@@ -11,4 +11,5 @@ config.yaml
 .env
 dist/
 build/
+!build/*.spec
 *.egg-info/

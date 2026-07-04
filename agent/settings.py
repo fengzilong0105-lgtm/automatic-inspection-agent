@@ -8,6 +8,7 @@ from typing import Any
 import yaml
 
 from agent.models import AppConfig
+from agent.paths import get_app_root, get_data_dir
 
 _ENV_PATTERN = re.compile(r"\$\{([^}]+)\}")
 UNCHANGED_SECRET = "__UNCHANGED__"
@@ -38,8 +39,8 @@ def mask_secret(value: str, visible: int = 4) -> str | None:
 
 class Settings:
     def __init__(self, config_path: Path | None = None) -> None:
-        self.project_root = Path(__file__).resolve().parent.parent
-        self.data_dir = self.project_root / "data"
+        self.project_root = get_app_root()
+        self.data_dir = get_data_dir()
         self.config_path = config_path or (self.data_dir / "config.yaml")
         self._config = self._load()
 

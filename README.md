@@ -1,6 +1,6 @@
-# Automatic Inspection Agent
+# SteadyOps
 
-Windows 跳板机部署的项目级服务巡检 AI Agent。通过 SSH 管理 Linux 上的 Java / Docker / Compose / 中间件服务。
+Windows 跳板机部署的 **SteadyOps** 运维桌面应用。通过 SSH 管理 Linux 上的 Java / Docker / Compose / 中间件服务。
 
 ## Windows 部署环境要求
 
@@ -269,6 +269,65 @@ ollama pull minimax-m3:cloud
 python -m agent.main --config data\config.yaml --host 0.0.0.0 --port 8765
 ```
 
+## 打包为可分享的 .exe（桌面应用）
+
+可将 Agent 打成 **单个 Windows 桌面程序**，发给他人双击运行，**无需安装 Python**。  
+所有操作在 **软件窗口内** 完成（初始化向导、巡检、告警、AI 对话、设置），**不打开浏览器**。
+
+大模型仍支持 **Ollama 与 OpenAI 兼容 API 并存**；若用本机 Ollama，用户需自行安装 Ollama。
+
+### 开发者：在本机构建
+
+```powershell
+cd e:\project\automatic-inspection-agent
+python -m venv .venv
+.\.venv\Scripts\activate
+pip install -e ".[build]"
+
+# 一键构建（约 5–15 分钟）
+.\scripts\build.ps1
+
+# 调试版（保留控制台窗口）
+.\scripts\build.ps1 -Console
+```
+
+产物：`dist\SteadyOps.exe`
+
+### 开发者：本地运行桌面版
+
+```powershell
+pip install -e .
+python -m agent.launcher
+```
+
+旧版 Web 控制台（仅开发调试）：`python -m agent.launcher --web`
+
+### 使用者：安装与配置
+
+1. 双击 `SteadyOps.exe`
+2. 首次运行进入 **初始化向导**：SSH → 大模型 → 飞书（可选）→ 扫描服务
+3. 完成后进入主界面：概览 / 告警 / AI 对话 / 设置
+
+再次双击时，若已在运行，会提示「应用已在运行中」。
+
+### 打包版数据存放位置
+
+| 内容 | 路径 |
+|------|------|
+| 配置文件 | `%APPDATA%\SteadyOps\data\config.yaml` |
+| 告警数据库 | `%APPDATA%\SteadyOps\data\agent.db` |
+| 运行日志 | `%APPDATA%\SteadyOps\logs\agent.log` |
+
+> 开发模式（`python -m agent.launcher`）在项目目录运行时也使用 `data/`。
+
+### 打包版说明
+
+- **不需要 Python、Qt 等环境**（已打进 exe）
+- **Ollama 需用户自行安装**（若选本地大模型）
+- 体积约 **80–200 MB**（含 PySide6 + LangChain）
+- 极少数精简系统若无法启动，可安装 [VC++ 2015–2022 x64 运行库](https://learn.microsoft.com/zh-cn/cpp/windows/latest-supported-vc-redist)
+
+
 ## 配置说明
 
 - `hosts[]`：Linux 目标机 SSH 信息
@@ -291,11 +350,14 @@ curl -X POST http://localhost:8765/api/inspection/run
 
 ## 架构
 
+- `agent/desktop/` — PySide6 桌面界面（默认入口）
+- `agent/services/` — 业务门面（SSH、巡检、对话等）
+- `agent/runtime/` — 后台 asyncio 运行时（巡检循环）
 - `agent/executor/ssh.py` — SSH 远程执行
 - `agent/discovery/` — 服务发现
 - `agent/monitor/` — 后台巡检
 - `agent/langchain/` — LangChain 对话与诊断
-- `agent/remediation/orchestrator.py` — 写操作（重启）
+- `agent/web/` — 旧版 Web 控制台（`--web` 调试用）
 
 ## 发布到 GitHub（纯净版说明）
 

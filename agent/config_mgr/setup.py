@@ -199,6 +199,7 @@ async def test_feishu_config(feishu: FeishuSetupPayload) -> dict[str, Any]:
     if not feishu.alert_chat_id:
         return {"success": False, "message": "请填写告警 Chat ID（群 oc_ 开头）"}
 
+    from agent.brand import PRODUCT_NAME
     from agent.feishu.client import FeishuAPIError, send_feishu_text
 
     try:
@@ -206,7 +207,7 @@ async def test_feishu_config(feishu: FeishuSetupPayload) -> dict[str, Any]:
             app_id=feishu.app_id,
             app_secret=app_secret,
             chat_id=feishu.alert_chat_id,
-            text="【服务巡检 Agent】这是一条测试消息，飞书机器人配置正常，群告警可用。",
+            text=f"【{PRODUCT_NAME}】这是一条测试消息，飞书机器人配置正常，群告警可用。",
         )
         return {
             "success": True,

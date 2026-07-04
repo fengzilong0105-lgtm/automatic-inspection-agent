@@ -36,10 +36,11 @@ from agent.config_mgr.hosts import (
     set_active_host,
     upsert_host,
 )
+from agent.paths import get_static_dir
 from agent.settings import Settings, UNCHANGED_SECRET, get_settings
 from agent.store.incidents import IncidentStore
 
-STATIC_DIR = Path(__file__).parent / "static"
+STATIC_DIR = get_static_dir()
 NO_CACHE = "no-cache, no-store, must-revalidate"
 
 

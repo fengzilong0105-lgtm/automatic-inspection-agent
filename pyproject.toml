@@ -22,6 +22,7 @@ dependencies = [
     "langgraph>=0.2.60",
     "langgraph-checkpoint-sqlite>=2.0.0",
     "langchain-ollama>=0.3.0",
+    "PySide6>=6.8.0",
 ]
 
 [project.optional-dependencies]
@@ -30,9 +31,14 @@ dev = [
     "pytest-asyncio>=0.24.0",
     "ruff>=0.8.0",
 ]
+build = [
+    "pyinstaller>=6.11.0",
+    "pillow>=11.0.0",
+]
 
 [project.scripts]
 inspection-agent = "agent.main:main"
+inspection-agent-app = "agent.launcher:main"
 
 [build-system]
 requires = ["hatchling"]
@@ -40,6 +46,9 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["agent"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"agent/desktop/assets" = "agent/desktop/assets"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
