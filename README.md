@@ -159,11 +159,15 @@ cd e:\project\automatic-inspection-agent
 
 ```powershell
 python -m venv .venv
-.\.venv\Scripts\activate
 
-# 激活后命令行前会出现 (.venv)
-pip install -U pip
-pip install -e .
+# 方式 A（推荐）：不激活 venv，直接用其 Python（不受 PowerShell 执行策略影响）
+.\.venv\Scripts\python.exe -m pip install -U pip
+.\.venv\Scripts\python.exe -m pip install -e .
+
+# 方式 B：先激活 venv 再安装（若 PowerShell 报「禁止运行脚本」，见下方「常见问题」）
+# .\.venv\Scripts\activate
+# pip install -U pip
+# pip install -e .
 ```
 
 安装约需几分钟，完成后无报错即可。
@@ -186,8 +190,9 @@ ollama pull minimax-m3:cloud
 
 ```powershell
 cd e:\project\automatic-inspection-agent
-.\.venv\Scripts\activate
-python -m agent.main
+
+# 推荐：不激活 venv，直接运行
+.\.venv\Scripts\python.exe -m agent.main
 ```
 
 看到类似 `Uvicorn running on http://0.0.0.0:8765` 即启动成功。
@@ -234,16 +239,16 @@ python -m agent.main
 ```powershell
 cd e:\project\automatic-inspection-agent
 python -m venv .venv
-.\.venv\Scripts\activate
-pip install -e .
+.\.venv\Scripts\python.exe -m pip install -e .
 
-# 可选：开发依赖
-# pip install -e ".[dev]"
+# 启动 Web 控制台
+.\.venv\Scripts\python.exe -m agent.main
 
-python -m agent.main
+# 或启动桌面版（开发调试）
+.\.venv\Scripts\python.exe -m agent.launcher
 ```
 
-浏览器打开 **http://localhost:8765**，首次访问会自动进入 **Web 初始化向导**：
+浏览器打开 **http://localhost:8765**（Web 模式），首次访问会自动进入 **Web 初始化向导**：
 
 1. 填写 Linux SSH 信息（IP、用户、私钥路径或密码）并测试连接  
    - 需要读 root 目录时勾选 **sudo su**
@@ -296,11 +301,11 @@ pip install -e ".[build]"
 ### 开发者：本地运行桌面版
 
 ```powershell
-pip install -e .
-python -m agent.launcher
+# 推荐：不激活 venv
+.\.venv\Scripts\python.exe -m agent.launcher
 ```
 
-旧版 Web 控制台（仅开发调试）：`python -m agent.launcher --web`
+旧版 Web 控制台（仅开发调试）：`.\.venv\Scripts\python.exe -m agent.launcher --web`
 
 ### 使用者：安装与配置
 
@@ -386,3 +391,52 @@ copy config.yaml.example data\config.yaml
 - 飞书接入需配置应用凭证并将机器人拉入告警群
 - 对话上下文默认保存在进程内存，**重启 Agent 后丢失**；可点控制台「清空对话」重置
 - 生产环境建议为 `web.auth_token` 设置访问令牌，并限制 `8765` 端口仅内网访问
+
+## 常见问题
+
+### PowerShell 提示「禁止运行脚本」，无法 `activate` 虚拟环境
+
+Windows 默认 PowerShell **执行策略**可能阻止运行 `.venv\Scripts\Activate.ps1`，例如：
+
+```text
+无法加载文件 ...\Activate.ps1，因为在此系统上禁止运行脚本
+```
+
+**推荐做法（无需改系统策略）**：不要 `activate`，直接用虚拟环境里的 Python：
+
+```powershell
+cd e:\project\automatic-inspection-agent
+
+# 安装依赖（首次）
+.\.venv\Scripts\python.exe -m pip install -e .
+
+# 调试桌面版
+.\.venv\Scripts\python.exe -m agent.launcher
+
+# 调试 Web 版
+.\.venv\Scripts\python.exe -m agent.main
+```
+
+**若仍想使用 `activate`**，任选其一：
+
+```powershell
+# 仅当前 PowerShell 窗口临时放行（关闭窗口后失效，较安全）
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+.\.venv\Scripts\activate
+python -m agent.launcher
+```
+
+```powershell
+# 改用 cmd（不受 PowerShell 执行策略影响）
+cmd
+cd /d e:\project\automatic-inspection-agent
+.venv\Scripts\activate.bat
+python -m agent.launcher
+```
+
+```powershell
+# 当前用户永久放宽（需管理员权限时选「是」；仅在你信任的开发机上使用）
+Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
+```
+
+> 说明：`activate` 只是把 `python` / `pip` 指到 `.venv`；用 `.\.venv\Scripts\python.exe` 效果相同，且更省事。

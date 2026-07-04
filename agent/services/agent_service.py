@@ -29,6 +29,24 @@ from agent.executor.ssh import get_executor_registry
 from agent.models import AppConfig, ServiceConfig
 from agent.runtime.background import BackgroundRuntime, get_runtime
 from agent.settings import UNCHANGED_SECRET, get_settings
+from agent.services.chat_ops import (
+    clear_conversation,
+    confirm_memory_suggestion,
+    create_conversation_workspace,
+    create_knowledge_entry,
+    delete_conversation,
+    delete_knowledge_entry,
+    ensure_default_conversation,
+    get_chat_memory_settings,
+    get_conversation_messages,
+    get_conversation_usage,
+    handle_chat_message,
+    list_conversations,
+    list_knowledge_entries,
+    load_chat_workspace,
+    save_chat_memory_settings,
+    update_knowledge_entry,
+)
 from agent.store.incidents import IncidentStore
 
 
@@ -278,19 +296,44 @@ class AgentService:
 
     # --- chat ---
 
+    def load_chat_workspace(self, conversation_id: str | None = None) -> Any:
+        return self._run(load_chat_workspace(conversation_id))
+
+    def create_conversation_workspace(self, title: str | None = None) -> Any:
+        return self._run(create_conversation_workspace(title))
+
+    def list_conversations(self) -> Any:
+        return self._run(list_conversations())
+
+    def create_conversation(self, title: str | None = None) -> Any:
+        return self._run(create_conversation_workspace(title))
+
+    def ensure_default_conversation(self) -> Any:
+        return self._run(ensure_default_conversation())
+
+    def get_conversation_messages(self, conversation_id: str) -> Any:
+        return self._run(get_conversation_messages(conversation_id))
+
+    def get_conversation_usage(self, conversation_id: str) -> Any:
+        return self._run(get_conversation_usage(conversation_id))
+
+    def delete_conversation(self, conversation_id: str) -> Any:
+        return self._run(delete_conversation(conversation_id))
+
     def chat_message(
         self, message: str, session_id: str = "desktop-default", confirmed: bool = False
     ) -> Any:
         return self._run(
-            self.runtime.chat_agent.handle_message(
-                session_id=session_id,
-                text=message,
+            handle_chat_message(
+                self.runtime.chat_agent,
+                conversation_id=session_id,
+                message=message,
                 confirmed=confirmed,
             )
         )
 
     def chat_clear(self, session_id: str = "desktop-default") -> Any:
-        return self._run(self.runtime.chat_agent.clear_session(session_id))
+        return self._run(clear_conversation(session_id))
 
     def confirm_restart(self, service_id: str) -> Any:
         return self._run(self._confirm_restart(service_id))
@@ -330,6 +373,68 @@ class AgentService:
         host = settings.get_host(item.host_id)
         host_label = f"{host.id} ({host.ssh.host})"
         return {"pending": True, **store.to_confirm_payload(item, host_label)}
+
+    # --- knowledge / memory ---
+
+    def list_knowledge(self) -> Any:
+        return self._run(list_knowledge_entries())
+
+    def create_knowledge(
+        self, category: str, key: str, value: str, source_conv_id: str | None = None
+    ) -> Any:
+        return self._run(
+            create_knowledge_entry(
+                category=category,
+                key=key,
+                value=value,
+                source_conv_id=source_conv_id,
+                chat_agent=self.runtime.chat_agent,
+            )
+        )
+
+    def update_knowledge(
+        self,
+        entry_id: str,
+        *,
+        category: str | None = None,
+        key: str | None = None,
+        value: str | None = None,
+    ) -> Any:
+        return self._run(
+            update_knowledge_entry(
+                entry_id,
+                category=category,
+                key=key,
+                value=value,
+                chat_agent=self.runtime.chat_agent,
+            )
+        )
+
+    def delete_knowledge(self, entry_id: str) -> Any:
+        return self._run(delete_knowledge_entry(entry_id, chat_agent=self.runtime.chat_agent))
+
+    def confirm_memory(
+        self,
+        category: str,
+        key: str,
+        value: str,
+        conversation_id: str | None = None,
+    ) -> Any:
+        return self._run(
+            confirm_memory_suggestion(
+                category=category,
+                key=key,
+                value=value,
+                conversation_id=conversation_id,
+                chat_agent=self.runtime.chat_agent,
+            )
+        )
+
+    def get_memory_settings(self) -> Any:
+        return self._run(get_chat_memory_settings())
+
+    def save_memory_settings(self, auto_extract: bool) -> Any:
+        return self._run(save_chat_memory_settings(auto_extract=auto_extract))
 
     @staticmethod
     def discovered_to_services(host_id: str, discovered: list[dict[str, Any]]) -> list[ServiceConfig]:

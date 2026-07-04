@@ -48,6 +48,11 @@ QTextEdit#chatHistory {
     padding: 8px;
 }
 
+QLabel#mutedText {
+    color: #8C8C8C;
+    font-size: 12px;
+}
+
 QPushButton#navButton {
     background: transparent;
     border: none;

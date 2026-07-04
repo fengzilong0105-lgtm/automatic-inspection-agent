@@ -4,10 +4,11 @@ import re
 from typing import Any
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
-from langgraph.checkpoint.memory import MemorySaver
 from langgraph.prebuilt import ToolNode, create_react_agent
 
+from agent.langchain.checkpointer import get_checkpointer
 from agent.langchain.context_builder import build_chat_system_prompt
+from agent.langchain.context_messages import build_summary_message
 from agent.langchain.llm_factory import get_llm
 from agent.langchain.session_context import chat_session_id
 from agent.langchain.tools import (
@@ -18,6 +19,8 @@ from agent.langchain.tools import (
 from agent.remediation.orchestrator import ActionOrchestrator
 from agent.remediation.pending_writes import get_pending_file_op_store
 from agent.settings import Settings, get_settings
+from agent.store.chat import get_chat_store
+from agent.store.knowledge import get_knowledge_store
 
 # 询问「如何重启」类问题，不应触发执行重启
 _HOWTO_RESTART = re.compile(
@@ -106,9 +109,10 @@ class ChatAgent:
     def __init__(self) -> None:
         self.settings = get_settings()
         self.orchestrator = ActionOrchestrator()
-        self._memory = MemorySaver()
+        self._memory = None
         self._graph = None
         self._graph_fingerprint: tuple | None = None
+        self._checkpointer_ready = False
 
     def _config_fingerprint(self) -> tuple:
         config = self.settings.config
@@ -120,31 +124,62 @@ class ChatAgent:
             config.llm.ollama_base_url,
         )
 
-    def _ensure_graph(self):
+    async def _knowledge_fingerprint(self) -> str:
+        store = get_knowledge_store()
+        await store.init()
+        return await store.get_fingerprint()
+
+    async def _ensure_checkpointer(self):
+        if self._memory is None:
+            self._memory = await get_checkpointer()
+            self._checkpointer_ready = True
+        return self._memory
+
+    async def _ensure_graph(self):
         fingerprint = self._config_fingerprint()
-        if self._graph is None or self._graph_fingerprint != fingerprint:
-            if self._graph_fingerprint is not None:
-                self._memory = MemorySaver()
+        knowledge_fp = await self._knowledge_fingerprint()
+        graph_key = (fingerprint, knowledge_fp)
+        memory = await self._ensure_checkpointer()
+        if self._graph is None or self._graph_fingerprint != graph_key:
+            knowledge_store = get_knowledge_store()
+            knowledge = await knowledge_store.get_entries_for_prompt(self.settings)
             tools = build_readonly_tools()
             tool_node = ToolNode(tools, handle_tool_errors=True)
             self._graph = create_react_agent(
                 get_llm("chat_qa"),
                 tool_node,
-                checkpointer=self._memory,
-                prompt=SystemMessage(content=build_chat_system_prompt(self.settings)),
+                checkpointer=memory,
+                prompt=SystemMessage(
+                    content=build_chat_system_prompt(self.settings, knowledge=knowledge)
+                ),
             )
-            self._graph_fingerprint = fingerprint
+            self._graph_fingerprint = graph_key
         return self._graph
 
+    def invalidate_graph(self) -> None:
+        """Force graph rebuild on next invoke (e.g. after knowledge changes)."""
+        self._graph = None
+        self._graph_fingerprint = None
+
     async def clear_session(self, session_id: str) -> None:
-        await self._memory.adelete_thread(session_id)
+        memory = await self._ensure_checkpointer()
+        await memory.adelete_thread(session_id)
+
+    async def _build_inputs(self, session_id: str, text: str) -> dict:
+        conv = await get_chat_store().get_conversation(session_id)
+        messages = []
+        summary_msg = build_summary_message(conv.summary)
+        if summary_msg:
+            messages.append(summary_msg)
+        messages.append(HumanMessage(content=text))
+        return {"messages": messages}
 
     async def _invoke_graph(self, session_id: str, text: str) -> str:
         token = chat_session_id.set(session_id)
         try:
             config = {"configurable": {"thread_id": session_id}}
-            inputs = {"messages": [HumanMessage(content=text)]}
-            graph = self._ensure_graph()
+            inputs = await self._build_inputs(session_id, text)
+            graph = await self._ensure_graph()
             final_message = ""
             async for event in graph.astream(inputs, config=config, stream_mode="values"):
                 messages = event.get("messages", [])
@@ -249,8 +284,8 @@ class ChatAgent:
             token = chat_session_id.set(session_id)
             try:
                 config = {"configurable": {"thread_id": session_id}}
-                inputs = {"messages": [HumanMessage(content=text)]}
-                graph = self._ensure_graph()
+                inputs = await self._build_inputs(session_id, text)
+                graph = await self._ensure_graph()
                 async for event in graph.astream_events(inputs, config=config, version="v2"):
                     kind = event.get("event")
                     if kind == "on_chat_model_stream":

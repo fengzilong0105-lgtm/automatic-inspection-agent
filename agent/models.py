@@ -108,6 +108,35 @@ class AutonomyConfig(BaseModel):
     write_path_whitelist: list[str] = Field(default_factory=list)
 
 
+class ToolCompressionConfig(BaseModel):
+    enabled: bool = True
+    keep_raw: bool = False
+    log_tail_lines: int = 80
+    log_error_scan: bool = True
+
+
+class ChatMemoryConfig(BaseModel):
+    auto_extract: bool = True
+    max_inject_tokens: int = 2000
+
+
+class ChatPolicyConfig(BaseModel):
+    yellow_threshold: float = 0.6
+    orange_threshold: float = 0.8
+    red_threshold: float = 0.9
+    keep_recent_turns: int = 10
+    shrink_keep_turns: int = 5
+    summary_trigger_turns: int = 30
+    tool_reserve_tokens: int = 8192
+
+
+class ChatConfig(BaseModel):
+    context_limit: int | None = None
+    tool_compression: ToolCompressionConfig = Field(default_factory=ToolCompressionConfig)
+    memory: ChatMemoryConfig = Field(default_factory=ChatMemoryConfig)
+    policy: ChatPolicyConfig = Field(default_factory=ChatPolicyConfig)
+
+
 class AppConfig(BaseModel):
     mode: Literal["remote", "local-linux", "local-windows"] = "remote"
     setup_completed: bool = False
@@ -121,6 +150,7 @@ class AppConfig(BaseModel):
     feishu: FeishuConfig = Field(default_factory=FeishuConfig)
     web: WebConfig = Field(default_factory=WebConfig)
     autonomy: AutonomyConfig = Field(default_factory=AutonomyConfig)
+    chat: ChatConfig = Field(default_factory=ChatConfig)
     data_dir: str = "./data"
 
 

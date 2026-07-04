@@ -12,6 +12,7 @@ from agent.executor.write_policy import is_path_allowed, normalize_remote_path
 from agent.executor.ssh import get_executor_registry
 from agent.langchain.context_builder import build_diagnosis_context
 from agent.langchain.llm_factory import get_llm
+from agent.langchain.tool_compress import compress_tool_output
 from agent.langchain.session_context import chat_session_id
 from agent.executor.java_probe import find_java_process
 from agent.executor.middleware_probe import probe_middleware_process
@@ -39,6 +40,10 @@ def _resolve_host(host_id: str | None = None):
 
 def _tool_error(prefix: str, exc: Exception) -> str:
     return f"{prefix}: {exc}"
+
+
+def _tool_result(tool_name: str, raw: str) -> str:
+    return compress_tool_output(tool_name, raw)
 
 
 def _extract_tool_output_text(output: str | object) -> str:
@@ -205,7 +210,8 @@ def build_readonly_tools() -> list[StructuredTool]:
                 return f"服务 {service_id} 未配置 log_path"
             host = settings.get_host(service.host_id)
             executor = registry.get(service.host_id, host)
-            return await executor.tail_log(service.log_path, lines=lines, pattern=pattern or None)
+            raw = await executor.tail_log(service.log_path, lines=lines, pattern=pattern or None)
+            return _tool_result("read_log", raw)
         except Exception as exc:
             return _tool_error("read_log 失败", exc)
 
@@ -235,7 +241,7 @@ def build_readonly_tools() -> list[StructuredTool]:
             header = f"# {path} @ {host.id} ({host.ssh.host})\n"
             if truncated:
                 header += f"# 仅显示前 {max_bytes} 字节\n"
-            return header + content
+            return _tool_result("read_remote_file", header + content)
         except Exception as exc:
             return _tool_error("read_remote_file 失败", exc)
 
@@ -258,7 +264,10 @@ def build_readonly_tools() -> list[StructuredTool]:
             executor = registry.get(host.id, host)
             result = await executor.run(cmd, timeout=timeout_seconds)
             host_label = f"{host.id} ({host.ssh.host})"
-            return format_command_result(host_label, cmd, result)
+            return _tool_result(
+                "run_remote_command",
+                format_command_result(host_label, cmd, result),
+            )
         except Exception as exc:
             return _tool_error("run_remote_command 失败", exc)
 
@@ -389,7 +398,7 @@ def build_readonly_tools() -> list[StructuredTool]:
             ]
         )
         await incident_store.update_diagnosis(incident_id, result.root_cause, result.suggestions)
-        return result.model_dump_json(indent=2)
+        return _tool_result("analyze_incident", result.model_dump_json(indent=2))
 
     async def get_deployment_info(service_id: str) -> str:
         """查询服务部署位置：部署目录(cwd)、PID、启动命令、jar 路径、端口、日志候选、systemd 托管探测。"""
@@ -448,7 +457,10 @@ def build_readonly_tools() -> list[StructuredTool]:
 
             status = await executor.service_status(service)
             payload["status"] = status.model_dump(mode="json")
-            return json.dumps(payload, ensure_ascii=False, indent=2, default=str)
+            return _tool_result(
+                "get_deployment_info",
+                json.dumps(payload, ensure_ascii=False, indent=2, default=str),
+            )
         except Exception as exc:
             return _tool_error("get_deployment_info 失败", exc)
 

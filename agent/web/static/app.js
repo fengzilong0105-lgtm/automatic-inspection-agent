@@ -7,12 +7,18 @@ function dashboard() {
     summary: [],
     incidents: [],
     messages: [],
+    conversations: [],
+    chatUsage: "",
     input: "",
     activeHost: "",
     activeService: "",
     pendingRestart: null,
     pendingWrite: null,
-    sessionId: "web-default",
+    pendingMemory: null,
+    knowledgeEntries: [],
+    memoryAutoExtract: true,
+    memoryDraft: { category: "service_fact", key: "", value: "" },
+    sessionId: "",
     showSettings: false,
     settingsForm: {
       llm: { provider: "openai", base_url: "", model: "", api_key: "", ollama_base_url: "http://localhost:11434", api_key_masked: null },
@@ -414,6 +420,41 @@ function dashboard() {
       await this.refresh({ skipSummary: true });
       this.refreshSummaryInBackground(this.activeHost);
       await this.loadSettingsForm();
+      await this.loadChatWorkspace();
+    },
+
+    async loadChatWorkspace(conversationId = null) {
+      const query = conversationId ? `?conversation_id=${encodeURIComponent(conversationId)}` : "";
+      const data = await this.api(`/api/chat/workspace${query}`);
+      this.conversations = data.conversations || [];
+      this.sessionId = data.conversation?.id || "";
+      this.chatUsage = this.formatChatUsage(data.usage);
+      this.messages = (data.messages || []).map((msg) => ({
+        role: msg.role === "system" || msg.role === "tool" ? "assistant" : msg.role,
+        text: msg.content || "",
+        streaming: false,
+      }));
+      this.$nextTick(() => this.scrollChatToBottom());
+    },
+
+    formatChatUsage(usage) {
+      if (!usage) return "";
+      const icon = usage.level_icon || "";
+      const hint = usage.hint ? ` · ${usage.hint}` : "";
+      return `${icon} 上下文 ${usage.used_label || usage.used} / ${usage.limit_label || usage.limit} (${usage.percent || 0}%)${hint}`.trim();
+    },
+
+    async createConversation() {
+      const data = await this.api("/api/chat/conversations", {
+        method: "POST",
+        body: JSON.stringify({ title: null }),
+      });
+      await this.loadChatWorkspace(data.conversation?.id);
+    },
+
+    async switchConversation(conversationId) {
+      if (!conversationId || conversationId === this.sessionId) return;
+      await this.loadChatWorkspace(conversationId);
     },
 
     async api(path, options = {}) {
@@ -586,6 +627,66 @@ function dashboard() {
       const data = await this.api("/api/setup/form");
       this.settingsForm.llm = { ...data.llm, api_key: "" };
       this.settingsForm.feishu = { ...data.feishu, app_secret: "" };
+      await this.loadKnowledge();
+      try {
+        const memorySettings = await this.api("/api/chat/memory-settings");
+        this.memoryAutoExtract = !!memorySettings.auto_extract;
+      } catch {
+        this.memoryAutoExtract = true;
+      }
+    },
+
+    async loadKnowledge() {
+      this.knowledgeEntries = await this.api("/api/chat/knowledge");
+    },
+
+    async saveMemoryAutoExtract() {
+      await this.api("/api/chat/memory-settings", {
+        method: "PUT",
+        body: JSON.stringify({ auto_extract: this.memoryAutoExtract }),
+      });
+    },
+
+    async addKnowledgeEntry() {
+      const draft = this.memoryDraft;
+      if (!draft.key.trim() || !draft.value.trim()) {
+        alert("请填写键和值");
+        return;
+      }
+      await this.api("/api/chat/knowledge", {
+        method: "POST",
+        body: JSON.stringify({
+          category: draft.category,
+          key: draft.key.trim(),
+          value: draft.value.trim(),
+        }),
+      });
+      this.memoryDraft.key = "";
+      this.memoryDraft.value = "";
+      await this.loadKnowledge();
+    },
+
+    async deleteKnowledgeEntry(entryId) {
+      if (!confirm("删除这条记忆？")) return;
+      await this.api(`/api/chat/knowledge/${encodeURIComponent(entryId)}`, { method: "DELETE" });
+      await this.loadKnowledge();
+    },
+
+    async confirmMemory() {
+      if (!this.pendingMemory) return;
+      const mem = this.pendingMemory;
+      await this.api("/api/chat/knowledge/confirm", {
+        method: "POST",
+        body: JSON.stringify({
+          session_id: this.sessionId,
+          category: mem.category,
+          key: mem.key,
+          value: mem.value,
+        }),
+      });
+      this.messages.push({ role: "system", text: "已记住该条信息" });
+      this.pendingMemory = null;
+      this.scrollChatToBottom();
     },
 
     buildSettingsPayload() {
@@ -954,6 +1055,23 @@ function dashboard() {
               finishAssistant(data || "对话处理失败", false);
               this.chatToolStatus = "";
               return;
+            } else if (event === "usage") {
+              this.chatUsage = this.formatChatUsage(data);
+            } else if (event === "compaction") {
+              this.messages.push({ role: "system", text: data });
+              this.scrollChatToBottom();
+            } else if (event === "memory") {
+              const autoSaved = (data && data.auto_saved) || [];
+              if (autoSaved.length) {
+                this.messages.push({
+                  role: "system",
+                  text: `已自动记住 ${autoSaved.length} 条信息`,
+                });
+              }
+              const suggestions = (data && data.memory_suggestions) || [];
+              if (suggestions.length) {
+                this.pendingMemory = suggestions[0];
+              }
             } else if (event === "done") {
               const cur = this.messages[assistantIdx];
               finishAssistant(cur.text || "已完成查询。", false);
@@ -985,6 +1103,8 @@ function dashboard() {
         this.messages = [];
         this.pendingRestart = null;
         this.pendingWrite = null;
+        const usage = await this.api(`/api/chat/conversations/${encodeURIComponent(this.sessionId)}/usage`);
+        this.chatUsage = this.formatChatUsage(usage);
       } catch (e) {
         alert(`清空失败: ${e.message}`);
       }

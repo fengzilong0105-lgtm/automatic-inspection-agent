@@ -37,6 +37,23 @@ from agent.config_mgr.hosts import (
     upsert_host,
 )
 from agent.paths import get_static_dir
+from agent.services.chat_ops import (
+    clear_conversation,
+    confirm_memory_suggestion,
+    create_conversation_workspace,
+    create_knowledge_entry,
+    delete_conversation,
+    delete_knowledge_entry,
+    get_chat_memory_settings,
+    get_conversation_usage,
+    handle_chat_message,
+    list_conversations,
+    list_knowledge_entries,
+    load_chat_workspace,
+    prepare_stream_chat,
+    save_chat_memory_settings,
+    update_knowledge_entry,
+)
 from agent.settings import Settings, UNCHANGED_SECRET, get_settings
 from agent.store.incidents import IncidentStore
 
@@ -62,6 +79,10 @@ class ChatSessionRequest(BaseModel):
     session_id: str = "default"
 
 
+class CreateConversationRequest(BaseModel):
+    title: str | None = None
+
+
 class ChatMessageRequest(BaseModel):
     message: str
     session_id: str = "default"
@@ -77,6 +98,30 @@ class ConfirmWriteRequest(BaseModel):
     write_id: str
     op_id: str | None = None
     session_id: str = "default"
+
+
+class KnowledgeCreateRequest(BaseModel):
+    category: str
+    key: str
+    value: str
+    source_conv_id: str | None = None
+
+
+class KnowledgeUpdateRequest(BaseModel):
+    category: str | None = None
+    key: str | None = None
+    value: str | None = None
+
+
+class KnowledgeConfirmRequest(BaseModel):
+    category: str
+    key: str
+    value: str
+    session_id: str | None = None
+
+
+class ChatMemorySettingsRequest(BaseModel):
+    auto_extract: bool
 
 
 def _auth_dependency(
@@ -112,12 +157,24 @@ def create_app() -> FastAPI:
         app.state.monitor = monitor
         await monitor.start()
 
+        from agent.langchain.checkpointer import get_checkpointer
+        from agent.store.chat import get_chat_store
+        from agent.store.knowledge import get_knowledge_store
+
+        await get_chat_store().init()
+        await get_knowledge_store().init()
+        await get_checkpointer()
+        await chat_agent._ensure_checkpointer()
+
     @app.on_event("shutdown")
     async def shutdown() -> None:
         monitor = getattr(app.state, "monitor", None)
         if monitor:
             await monitor.stop()
         await get_executor_registry().close_all()
+        from agent.langchain.checkpointer import close_checkpointer
+
+        await close_checkpointer()
 
     @app.get("/health")
     async def health() -> dict[str, str]:
@@ -437,12 +494,45 @@ def create_app() -> FastAPI:
         incidents = await monitor.run_once()
         return {"created": len(incidents), "incidents": [i.model_dump() for i in incidents]}
 
+    @app.get("/api/chat/workspace")
+    async def chat_workspace(
+        conversation_id: str | None = None, _: None = Depends(_auth_dependency)
+    ) -> dict[str, Any]:
+        return await load_chat_workspace(conversation_id)
+
+    @app.get("/api/chat/conversations")
+    async def chat_conversations(_: None = Depends(_auth_dependency)) -> list[dict[str, Any]]:
+        return await list_conversations()
+
+    @app.post("/api/chat/conversations")
+    async def chat_create_conversation(
+        body: CreateConversationRequest, _: None = Depends(_auth_dependency)
+    ) -> dict[str, Any]:
+        return await create_conversation_workspace(body.title)
+
+    @app.get("/api/chat/conversations/{conversation_id}/messages")
+    async def chat_conversation_messages(
+        conversation_id: str, _: None = Depends(_auth_dependency)
+    ) -> dict[str, Any]:
+        return await load_chat_workspace(conversation_id)
+
+    @app.get("/api/chat/conversations/{conversation_id}/usage")
+    async def chat_conversation_usage(
+        conversation_id: str, _: None = Depends(_auth_dependency)
+    ) -> dict[str, Any]:
+        return await get_conversation_usage(conversation_id)
+
+    @app.delete("/api/chat/conversations/{conversation_id}")
+    async def chat_delete_conversation(
+        conversation_id: str, _: None = Depends(_auth_dependency)
+    ) -> dict[str, Any]:
+        return await delete_conversation(conversation_id)
+
     @app.post("/api/chat/clear")
     async def chat_clear(
         body: ChatSessionRequest, _: None = Depends(_auth_dependency)
     ) -> dict[str, Any]:
-        await chat_agent.clear_session(body.session_id)
-        return {"cleared": True, "session_id": body.session_id}
+        return await clear_conversation(body.session_id)
 
     @app.get("/api/chat/pending-file-op")
     async def pending_file_op(
@@ -467,9 +557,10 @@ def create_app() -> FastAPI:
 
         logger = logging.getLogger(__name__)
         try:
-            result = await chat_agent.handle_message(
-                session_id=body.session_id,
-                text=body.message,
+            result = await handle_chat_message(
+                chat_agent,
+                conversation_id=body.session_id,
+                message=body.message,
                 confirmed=body.confirmed,
             )
         except Exception as exc:
@@ -479,11 +570,51 @@ def create_app() -> FastAPI:
 
     @app.post("/api/chat/stream")
     async def chat_stream(body: ChatMessageRequest, _: None = Depends(_auth_dependency)):
+        from agent.langchain.memory_extractor import process_turn_memories
+        from agent.store.chat import get_chat_store
+
         async def event_generator():
+            prep = await prepare_stream_chat(
+                chat_agent,
+                body.session_id,
+                body.message,
+                confirmed=body.confirmed,
+            )
+            applied = prep.get("applied", [])
+            for notice in prep.get("notices") or []:
+                yield f"data: {json.dumps({'event': 'compaction', 'data': notice}, ensure_ascii=False)}\n\n"
+            if prep.get("type") == "error":
+                yield f"data: {json.dumps({'event': 'error', 'data': prep.get('message')}, ensure_ascii=False)}\n\n"
+                usage = prep.get("usage") or await get_chat_store().get_usage(body.session_id, actions_applied=applied)
+                yield f"data: {json.dumps({'event': 'usage', 'data': usage}, ensure_ascii=False)}\n\n"
+                return
+
+            store = get_chat_store()
+            assistant_parts: list[str] = []
             async for chunk in chat_agent.stream_message(
                 body.session_id, body.message, confirmed=body.confirmed
             ):
+                if chunk.get("event") == "delta":
+                    assistant_parts.append(str(chunk.get("data", "")))
                 yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+
+            if assistant_parts:
+                assistant_text = "".join(assistant_parts)
+                await store.append_message(
+                    body.session_id,
+                    role="assistant",
+                    content=assistant_text,
+                )
+                memory_info = await process_turn_memories(
+                    user_text=body.message,
+                    assistant_text=assistant_text,
+                    conversation_id=body.session_id,
+                )
+                if memory_info.get("auto_saved"):
+                    chat_agent.invalidate_graph()
+                yield f"data: {json.dumps({'event': 'memory', 'data': memory_info}, ensure_ascii=False)}\n\n"
+            usage = await store.get_usage(body.session_id, actions_applied=applied)
+            yield f"data: {json.dumps({'event': 'usage', 'data': usage}, ensure_ascii=False)}\n\n"
 
         return StreamingResponse(
             event_generator(),
@@ -519,6 +650,62 @@ def create_app() -> FastAPI:
             "stderr": result.stderr,
             "exit_code": result.exit_code,
         }
+
+    @app.get("/api/chat/knowledge")
+    async def chat_knowledge_list(_: None = Depends(_auth_dependency)) -> list[dict[str, Any]]:
+        return await list_knowledge_entries()
+
+    @app.post("/api/chat/knowledge")
+    async def chat_knowledge_create(
+        body: KnowledgeCreateRequest, _: None = Depends(_auth_dependency)
+    ) -> dict[str, Any]:
+        return await create_knowledge_entry(
+            category=body.category,
+            key=body.key,
+            value=body.value,
+            source_conv_id=body.source_conv_id,
+            chat_agent=chat_agent,
+        )
+
+    @app.put("/api/chat/knowledge/{entry_id}")
+    async def chat_knowledge_update(
+        entry_id: str, body: KnowledgeUpdateRequest, _: None = Depends(_auth_dependency)
+    ) -> dict[str, Any]:
+        return await update_knowledge_entry(
+            entry_id,
+            category=body.category,
+            key=body.key,
+            value=body.value,
+            chat_agent=chat_agent,
+        )
+
+    @app.delete("/api/chat/knowledge/{entry_id}")
+    async def chat_knowledge_delete(
+        entry_id: str, _: None = Depends(_auth_dependency)
+    ) -> dict[str, Any]:
+        return await delete_knowledge_entry(entry_id, chat_agent=chat_agent)
+
+    @app.post("/api/chat/knowledge/confirm")
+    async def chat_knowledge_confirm(
+        body: KnowledgeConfirmRequest, _: None = Depends(_auth_dependency)
+    ) -> dict[str, Any]:
+        return await confirm_memory_suggestion(
+            category=body.category,
+            key=body.key,
+            value=body.value,
+            conversation_id=body.session_id,
+            chat_agent=chat_agent,
+        )
+
+    @app.get("/api/chat/memory-settings")
+    async def chat_memory_settings(_: None = Depends(_auth_dependency)) -> dict[str, Any]:
+        return await get_chat_memory_settings()
+
+    @app.put("/api/chat/memory-settings")
+    async def chat_memory_settings_save(
+        body: ChatMemorySettingsRequest, _: None = Depends(_auth_dependency)
+    ) -> dict[str, Any]:
+        return await save_chat_memory_settings(auto_extract=body.auto_extract)
 
     @app.post("/api/ssh/test")
     async def test_ssh(host_id: str, _: None = Depends(_auth_dependency)) -> dict[str, Any]:

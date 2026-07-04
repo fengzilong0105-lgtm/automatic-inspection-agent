@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from agent.models import DiagnosisResult, Incident, ServiceConfig
 from agent.settings import Settings, get_settings
+from agent.store.knowledge import KnowledgeEntry
 
 
 def build_diagnosis_context(
@@ -20,13 +21,16 @@ def build_diagnosis_context(
     )
 
 
-def build_chat_system_prompt(settings: Settings | None = None) -> str:
+def build_chat_system_prompt(
+    settings: Settings | None = None,
+    knowledge: list[KnowledgeEntry] | None = None,
+) -> str:
     settings = settings or get_settings()
     hosts = (
         ", ".join(f"{h.id} ({h.ssh.host})" for h in settings.config.hosts) or "暂无主机"
     )
     services = ", ".join(s.id for s in settings.get_enabled_services()) or "暂无已注册服务"
-    return (
+    base = (
         "你是项目级服务巡检助手，运行在企业内网 Windows 跳板机上，通过 SSH 管理 Linux 服务。\n"
         "你可以使用工具查询服务状态、部署位置、日志、读取远程文件、执行只读 shell 命令、扫描服务、触发巡检、分析故障。\n"
         "重启等写操作必须由用户明确确认，你不能擅自执行。\n"
@@ -63,3 +67,14 @@ def build_chat_system_prompt(settings: Settings | None = None) -> str:
         "- 【更正】：若先前结论与新的工具结果冲突，必须明确更正并说明依据。\n"
         "禁止在【待核实】状态下使用「不是 systemd」「没有 unit」「裸 java 启动」等否定性断言。"
     )
+    if knowledge:
+        base += "\n\n【已知事实与偏好（跨对话共享）】\n"
+        for entry in knowledge:
+            base += f"- [{entry.category}] {entry.key}: {entry.value}\n"
+    base += (
+        "\n\n【长期记忆】\n"
+        "当发现值得长期记住的稳定事实（服务路径、启动方式、用户偏好、运维注意事项）时，"
+        "可在回复末尾单独一行使用格式：【可记住】category/key: value\n"
+        "其中 category 为 preference / service_fact / ops_note 之一。"
+    )
+    return base

@@ -84,12 +84,24 @@ class BackgroundRuntime:
 
         self.monitor = MonitorLoop(on_alert=on_alert, incident_store=self.incident_store)
         await self.monitor.start()
+
+        from agent.langchain.checkpointer import get_checkpointer
+        from agent.store.chat import get_chat_store
+        from agent.store.knowledge import get_knowledge_store
+
+        await get_chat_store().init()
+        await get_knowledge_store().init()
+        await get_checkpointer()
+        await self.chat_agent._ensure_checkpointer()
         logger.info("Background runtime started")
 
     async def _async_shutdown(self) -> None:
         if self.monitor:
             await self.monitor.stop()
         await get_executor_registry().close_all()
+        from agent.langchain.checkpointer import close_checkpointer
+
+        await close_checkpointer()
         logger.info("Background runtime stopped")
 
 

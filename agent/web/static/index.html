@@ -82,6 +82,13 @@
           <section class="panel chat">
             <div class="chat-head">
               <h2>对话运维</h2>
+              <select x-model="sessionId" @change="switchConversation(sessionId)">
+                <template x-for="conv in conversations" :key="conv.id">
+                  <option :value="conv.id" x-text="conv.title"></option>
+                </template>
+              </select>
+              <button type="button" class="secondary" @click="createConversation()" :disabled="chatSending">新建对话</button>
+              <span class="muted" x-show="chatUsage" x-text="chatUsage"></span>
               <button type="button" class="secondary chat-clear-btn" @click="clearChat()" :disabled="chatSending">清空对话</button>
             </div>
             <p class="chat-tool-status" x-show="chatToolStatus" x-text="chatToolStatus"></p>
@@ -112,6 +119,13 @@
                 <pre class="write-preview" x-show="pendingWrite.action !== 'delete' && pendingWrite.content_preview" x-text="pendingWrite.content_preview"></pre>
                 <button @click="confirmWrite()" x-text="pendingWrite.action === 'delete' ? '确认删除' : '确认写入'"></button>
                 <button class="secondary" @click="pendingWrite=null">取消</button>
+              </div>
+            </template>
+            <template x-if="pendingMemory">
+              <div class="confirm-box">
+                <p x-text="`待确认记忆：[${pendingMemory.category}] ${pendingMemory.key}: ${pendingMemory.value}`"></p>
+                <button @click="confirmMemory()">记住这条</button>
+                <button class="secondary" @click="pendingMemory=null">取消</button>
               </div>
             </template>
           </section>
@@ -280,6 +294,41 @@
         <button @click="testFeishuSettings()">测试飞书告警</button>
         <pre class="result" x-show="settingsFeishuResult" x-text="settingsFeishuResult"></pre>
 
+        <h3>AI 记忆</h3>
+        <label class="checkbox full">
+          <input type="checkbox" x-model="memoryAutoExtract" @change="saveMemoryAutoExtract()" />
+          自动提取记忆（每轮对话结束后）
+        </label>
+        <div class="table-wrap" x-show="knowledgeEntries.length">
+          <table class="data-table">
+            <thead>
+              <tr><th>分类</th><th>键</th><th>值</th><th>操作</th></tr>
+            </thead>
+            <tbody>
+              <template x-for="entry in knowledgeEntries" :key="entry.id">
+                <tr>
+                  <td x-text="entry.category"></td>
+                  <td x-text="entry.key"></td>
+                  <td x-text="entry.value"></td>
+                  <td><button type="button" class="secondary" @click="deleteKnowledgeEntry(entry.id)">删除</button></td>
+                </tr>
+              </template>
+            </tbody>
+          </table>
+        </div>
+        <div class="form-grid">
+          <label>分类
+            <select x-model="memoryDraft.category">
+              <option value="preference">preference</option>
+              <option value="service_fact">service_fact</option>
+              <option value="ops_note">ops_note</option>
+            </select>
+          </label>
+          <label>键<input x-model="memoryDraft.key" /></label>
+          <label class="full">值<input x-model="memoryDraft.value" /></label>
+        </div>
+        <button type="button" @click="addKnowledgeEntry()">手动添加记忆</button>
+
         <div class="actions modal-actions">
           <button class="secondary" @click="showSettings=false">关闭</button>
           <button class="primary" @click="saveSettings()">保存 LLM / 飞书</button>
@@ -287,6 +336,6 @@
       </div>
     </div>
   </div>
-  <script src="/static/app.js?v=19"></script>
+  <script src="/static/app.js?v=21"></script>
 </body>
 </html>
