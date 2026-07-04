@@ -9,7 +9,7 @@ import asyncssh
 from agent.executor.base import Executor
 from agent.executor.java_probe import find_java_process
 from agent.executor.middleware_probe import probe_middleware_process
-from agent.executor.systemd_probe import probe_systemd_unit
+from agent.executor.systemd_probe import detect_systemd_unit_from_pid, probe_systemd_unit
 from agent.models import CommandResult, HostConfig, HostMetrics, ServiceConfig, ServiceStatus, ServiceType
 
 
@@ -178,6 +178,16 @@ class SSHRemoteExecutor:
             probe = await find_java_process(self, service, java_process_index)
             running = probe["running"]
             detail = probe["detail"]
+            primary = probe.get("primary") or {}
+            pid = primary.get("pid")
+            if running and pid and not service.systemd_unit:
+                detected_unit = await detect_systemd_unit_from_pid(self, pid)
+                if detected_unit:
+                    sys_probe = await probe_systemd_unit(self, detected_unit)
+                    if sys_probe["running"] and sys_probe.get("main_pid") == pid:
+                        probe_method = "systemd"
+                        running = True
+                        detail = f"[systemd:{detected_unit}] {sys_probe['detail']}"
         elif service.type in (ServiceType.DOCKER, ServiceType.MIDDLEWARE) and service.container_name:
             probe_method = "docker"
             result = await self.run(

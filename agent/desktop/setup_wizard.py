@@ -5,17 +5,18 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QFormLayout,
-    QGroupBox,
-    QHBoxLayout,
+    QFrame,
     QLabel,
     QLineEdit,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QSpinBox,
     QTextEdit,
     QVBoxLayout,
     QWizard,
     QWizardPage,
+    QWidget,
 )
 
 from agent.config_mgr.setup import (
@@ -28,9 +29,53 @@ from agent.config_mgr.setup import (
 )
 from agent.desktop.async_call import AsyncCall
 from agent.desktop.constants import UNCHANGED
+from agent.desktop.widgets.card import Card
 from agent.models import ServiceConfig
 from agent.brand import PRODUCT_NAME
 from agent.desktop.assets import load_app_icon
+from agent.services.agent_service import AgentService
+
+
+def _style_form(form: QFormLayout) -> None:
+    form.setSpacing(12)
+    form.setVerticalSpacing(12)
+    form.setHorizontalSpacing(16)
+    form.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+    form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
+
+
+def _style_field(widget: QLineEdit | QSpinBox | QComboBox) -> None:
+    widget.setMinimumHeight(36)
+
+
+def _build_wizard_page(page: QWizardPage) -> QVBoxLayout:
+    scroll = QScrollArea(page)
+    scroll.setObjectName("wizardScroll")
+    scroll.setWidgetResizable(True)
+    scroll.setFrameShape(QFrame.Shape.NoFrame)
+    scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+
+    body = QWidget()
+    body.setObjectName("wizardPageBody")
+    body_layout = QVBoxLayout(body)
+    body_layout.setContentsMargins(24, 8, 24, 24)
+    body_layout.setSpacing(12)
+    scroll.setWidget(body)
+
+    page_layout = QVBoxLayout(page)
+    page_layout.setContentsMargins(0, 0, 0, 0)
+    page_layout.setSpacing(0)
+    page_layout.addWidget(scroll)
+    return body_layout
+
+
+def _make_result_box(max_height: int = 120) -> QTextEdit:
+    box = QTextEdit()
+    box.setObjectName("wizardResultBox")
+    box.setReadOnly(True)
+    box.setMinimumHeight(72)
+    box.setMaximumHeight(max_height)
+    return box
 
 
 class SSHPage(QWizardPage):
@@ -39,6 +84,8 @@ class SSHPage(QWizardPage):
         self.service = service
         self.setTitle("SSH 连接")
         self.setSubTitle("填写 Linux 目标机的 SSH 信息。")
+
+        layout = _build_wizard_page(self)
 
         form = QFormLayout()
         self.host_id = QLineEdit("prod-01")
@@ -54,10 +101,21 @@ class SSHPage(QWizardPage):
         self.use_sudo = QCheckBox("需要 sudo su（读 root 目录时勾选）")
         self.sudo_password = QLineEdit()
         self.sudo_password.setEchoMode(QLineEdit.EchoMode.Password)
-        self.result = QTextEdit()
-        self.result.setReadOnly(True)
-        self.result.setMaximumHeight(100)
+        self.result = _make_result_box()
 
+        for field in (
+            self.host_id,
+            self.host_name,
+            self.ssh_host,
+            self.ssh_port,
+            self.ssh_user,
+            self.key_file,
+            self.password,
+            self.sudo_password,
+        ):
+            _style_field(field)
+
+        _style_form(form)
         form.addRow("主机 ID", self.host_id)
         form.addRow("显示名称", self.host_name)
         form.addRow("IP / 域名", self.ssh_host)
@@ -68,16 +126,21 @@ class SSHPage(QWizardPage):
         form.addRow("", self.use_sudo)
         form.addRow("sudo 密码", self.sudo_password)
 
+        form_card = Card(padding=20)
+        form_card.content_layout.addLayout(form)
+
         test_btn = QPushButton("测试连接")
         test_btn.setObjectName("primaryButton")
         test_btn.clicked.connect(self.test_ssh)
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 16, 16, 16)
-        layout.setSpacing(12)
-        layout.addLayout(form)
+
+        result_title = QLabel("测试结果")
+        result_title.setObjectName("fieldLabel")
+
+        layout.addWidget(form_card)
         layout.addWidget(test_btn)
-        layout.addWidget(QLabel("测试结果"))
+        layout.addWidget(result_title)
         layout.addWidget(self.result)
+        layout.addStretch()
 
         self._bridge = AsyncCall(self)
         self._bridge.finished.connect(self._on_test_done)
@@ -135,6 +198,8 @@ class LLMPage(QWizardPage):
         self.setTitle("大模型")
         self.setSubTitle("选择 Ollama 本地模型或 OpenAI 兼容 API。")
 
+        layout = _build_wizard_page(self)
+
         form = QFormLayout()
         self.provider = QComboBox()
         self.provider.addItems(["openai", "ollama"])
@@ -143,26 +208,30 @@ class LLMPage(QWizardPage):
         self.api_key = QLineEdit()
         self.api_key.setEchoMode(QLineEdit.EchoMode.Password)
         self.ollama_url = QLineEdit("http://localhost:11434")
-        self.result = QTextEdit()
-        self.result.setReadOnly(True)
-        self.result.setMaximumHeight(100)
+        self.result = _make_result_box()
+
+        for field in (self.provider, self.base_url, self.model, self.api_key, self.ollama_url):
+            _style_field(field)
 
         self.provider.currentTextChanged.connect(self._sync_provider_fields)
+        _style_form(form)
         form.addRow("Provider", self.provider)
         form.addRow("API Base URL", self.base_url)
         form.addRow("模型名", self.model)
         form.addRow("API Key", self.api_key)
         form.addRow("Ollama 地址", self.ollama_url)
 
+        form_card = Card(padding=20)
+        form_card.content_layout.addLayout(form)
+
         test_btn = QPushButton("测试 LLM")
         test_btn.setObjectName("primaryButton")
         test_btn.clicked.connect(self.test_llm)
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 16, 16, 16)
-        layout.setSpacing(12)
-        layout.addLayout(form)
+
+        layout.addWidget(form_card)
         layout.addWidget(test_btn)
         layout.addWidget(self.result)
+        layout.addStretch()
 
         self._bridge = AsyncCall(self)
         self._bridge.finished.connect(self._on_test_done)
@@ -210,30 +279,36 @@ class FeishuPage(QWizardPage):
         self.setTitle("飞书告警（可选）")
         self.setSubTitle("可跳过；启用后告警会推送到飞书群。")
 
+        layout = _build_wizard_page(self)
+
         form = QFormLayout()
         self.enabled = QCheckBox("启用飞书告警")
         self.app_id = QLineEdit()
         self.app_secret = QLineEdit()
         self.app_secret.setEchoMode(QLineEdit.EchoMode.Password)
         self.chat_id = QLineEdit()
-        self.result = QTextEdit()
-        self.result.setReadOnly(True)
-        self.result.setMaximumHeight(100)
+        self.result = _make_result_box()
 
+        for field in (self.app_id, self.app_secret, self.chat_id):
+            _style_field(field)
+
+        _style_form(form)
         form.addRow("", self.enabled)
         form.addRow("App ID", self.app_id)
         form.addRow("App Secret", self.app_secret)
         form.addRow("告警 Chat ID", self.chat_id)
 
+        form_card = Card(padding=20)
+        form_card.content_layout.addLayout(form)
+
         test_btn = QPushButton("发送测试消息")
         test_btn.setObjectName("primaryButton")
         test_btn.clicked.connect(self.test_feishu)
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 16, 16, 16)
-        layout.setSpacing(12)
-        layout.addLayout(form)
+
+        layout.addWidget(form_card)
         layout.addWidget(test_btn)
         layout.addWidget(self.result)
+        layout.addStretch()
 
         self._bridge = AsyncCall(self)
         self._bridge.finished.connect(
@@ -270,18 +345,17 @@ class ScanPage(QWizardPage):
         self.setTitle("扫描并注册服务")
         self.setSubTitle("扫描 Linux 主机上的 Java / Docker / 中间件并注册。")
 
+        layout = _build_wizard_page(self)
+
         self.scan_btn = QPushButton("扫描服务")
         self.scan_btn.setObjectName("primaryButton")
         self.scan_btn.clicked.connect(self.scan_services)
-        self.result = QTextEdit()
-        self.result.setReadOnly(True)
+        self.result = _make_result_box(240)
         self.discovered: list[dict] = []
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 16, 16, 16)
-        layout.setSpacing(12)
         layout.addWidget(self.scan_btn)
         layout.addWidget(self.result)
+        layout.addStretch()
 
         self._bridge = AsyncCall(self)
         self._bridge.finished.connect(self._on_scan_done)
@@ -319,7 +393,8 @@ class SetupWizard(QWizard):
         app_icon = load_app_icon()
         if not app_icon.isNull():
             self.setWindowIcon(app_icon)
-        self.setMinimumSize(760, 580)
+        self.setMinimumSize(760, 640)
+        self.resize(800, 680)
         self.setWizardStyle(QWizard.WizardStyle.ModernStyle)
 
         form = service.setup_form()

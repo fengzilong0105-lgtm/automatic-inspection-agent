@@ -165,6 +165,17 @@ class AgentService:
         settings = get_settings()
         existing = {s.id: s for s in settings.config.services}
         for svc in services:
+            old = existing.get(svc.id)
+            if old:
+                svc = svc.model_copy(
+                    update={
+                        "systemd_unit": svc.systemd_unit or old.systemd_unit,
+                        "deploy_dir": svc.deploy_dir or old.deploy_dir,
+                        "jar_path": svc.jar_path or old.jar_path,
+                        "log_path": svc.log_path or old.log_path,
+                        "listen_ports": svc.listen_ports or old.listen_ports,
+                    }
+                )
             existing[svc.id] = svc
         config = settings.config.model_copy(
             update={"services": list(existing.values()), "setup_completed": True}

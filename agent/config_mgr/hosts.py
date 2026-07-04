@@ -113,3 +113,23 @@ def _reset_ssh_pool() -> None:
             loop.run_until_complete(get_executor_registry().close_all())
     except RuntimeError:
         pass
+
+
+def enrich_service_systemd_unit(service_id: str, unit: str, settings: Settings | None = None) -> bool:
+    """Persist a detected systemd unit onto a registered service when missing."""
+    from agent.executor.systemd_probe import _normalize_unit_name
+
+    settings = settings or get_settings()
+    service = settings.get_service(service_id)
+    normalized = _normalize_unit_name(unit)
+    if service.systemd_unit == normalized:
+        return False
+    if service.systemd_unit:
+        return False
+
+    services = [
+        s.model_copy(update={"systemd_unit": normalized}) if s.id == service_id else s
+        for s in settings.config.services
+    ]
+    settings.save(settings.config.model_copy(update={"services": services}))
+    return True

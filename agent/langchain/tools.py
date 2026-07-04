@@ -5,6 +5,7 @@ from typing import Annotated
 
 from langchain_core.tools import StructuredTool
 
+from agent.config_mgr.hosts import enrich_service_systemd_unit
 from agent.discovery.orchestrator import scan_host, to_service_config
 from agent.executor.command_policy import format_command_result, validate_remote_command
 from agent.executor.write_policy import is_path_allowed, normalize_remote_path
@@ -14,7 +15,7 @@ from agent.langchain.llm_factory import get_llm
 from agent.langchain.session_context import chat_session_id
 from agent.executor.java_probe import find_java_process
 from agent.executor.middleware_probe import probe_middleware_process
-from agent.executor.systemd_probe import probe_systemd_unit
+from agent.executor.systemd_probe import probe_systemd_for_service, probe_systemd_unit
 from agent.models import DiagnosisResult, ServiceType
 from agent.monitor.loop import MonitorLoop
 from agent.remediation.orchestrator import ActionOrchestrator
@@ -116,6 +117,45 @@ def _format_status(status) -> str:
         "note": "running 由进程/systemd/docker 探针判定；health_ok 为 HTTP 健康检查（未配置则为 null）",
     }
     return json.dumps(payload, ensure_ascii=False, indent=2)
+
+
+def _build_startup_summary(service, systemd_probe: dict, payload: dict) -> dict:
+    verification = systemd_probe.get("verification", "unverified")
+    managed = systemd_probe.get("managed_by_systemd")
+    active_unit = systemd_probe.get("active_unit")
+    registered_unit = service.systemd_unit
+
+    if managed and active_unit:
+        method = "systemd"
+        conclusion = f"由 systemd 单元 {active_unit} 托管"
+        confidence = "verified_systemd"
+    elif service.container_name:
+        method = "docker"
+        conclusion = f"由 Docker 容器 {service.container_name} 运行"
+        confidence = "registered"
+    elif service.compose_file and service.compose_service:
+        method = "docker_compose"
+        conclusion = f"由 Compose 服务 {service.compose_service} 运行"
+        confidence = "registered"
+    elif payload.get("runtime", {}).get("running") or payload.get("pid"):
+        method = "process"
+        conclusion = "以进程方式运行（未确认 systemd/docker 托管）"
+        confidence = verification
+    else:
+        method = "unknown"
+        conclusion = "未检测到运行中的进程"
+        confidence = "unverified"
+
+    return {
+        "method": method,
+        "conclusion": conclusion,
+        "confidence": confidence,
+        "registered_systemd_unit": registered_unit,
+        "do_not_infer_from_null": (
+            "registered.systemd_unit 为 null 仅表示注册信息未记录，"
+            "不能据此断定主机上没有 systemd 单元；以 systemd_probe 为准。"
+        ),
+    }
 
 
 def build_readonly_tools() -> list[StructuredTool]:
@@ -352,23 +392,30 @@ def build_readonly_tools() -> list[StructuredTool]:
         return result.model_dump_json(indent=2)
 
     async def get_deployment_info(service_id: str) -> str:
-        """查询服务部署位置：部署目录(cwd)、PID、启动命令、jar 路径、端口、日志候选。"""
+        """查询服务部署位置：部署目录(cwd)、PID、启动命令、jar 路径、端口、日志候选、systemd 托管探测。"""
         try:
             service = settings.get_service(service_id)
             host = settings.get_host(service.host_id)
             executor = registry.get(service.host_id, host)
+            runtime_pid: int | None = None
             payload: dict = {
                 "service_id": service_id,
                 "host": {"id": host.id, "name": host.name, "ssh_host": host.ssh.host},
                 "registered": service.model_dump(),
+                "source_labels": {
+                    "registered": "config_registry",
+                    "runtime": "live_probe",
+                    "systemd_probe": "live_probe",
+                },
             }
             if service.type == ServiceType.JAVA:
                 probe = await find_java_process(executor, service)
                 payload["runtime"] = probe
                 if probe.get("primary"):
                     primary = probe["primary"]
+                    runtime_pid = primary.get("pid")
                     payload["deploy_dir"] = primary.get("deploy_dir")
-                    payload["pid"] = primary.get("pid")
+                    payload["pid"] = runtime_pid
                     payload["cmdline"] = primary.get("cmdline")
                     payload["jar_path"] = primary.get("jar_path")
                     payload["listen_ports"] = primary.get("listen_ports", [])
@@ -377,6 +424,28 @@ def build_readonly_tools() -> list[StructuredTool]:
                 if service.systemd_unit:
                     payload["systemd"] = await probe_systemd_unit(executor, service.systemd_unit)
                 payload["process"] = await probe_middleware_process(executor, service.id)
+                proc = payload.get("process") or {}
+                if isinstance(proc, dict) and proc.get("pid"):
+                    runtime_pid = proc.get("pid")
+
+            systemd_probe = await probe_systemd_for_service(
+                executor,
+                service_id,
+                pid=runtime_pid,
+                registered_unit=service.systemd_unit,
+            )
+            payload["systemd_probe"] = systemd_probe
+            payload["startup_summary"] = _build_startup_summary(service, systemd_probe, payload)
+
+            detected_unit = systemd_probe.get("active_unit") or systemd_probe.get("detected_from_pid")
+            if detected_unit and enrich_service_systemd_unit(service_id, detected_unit):
+                payload["registry_updated"] = {
+                    "systemd_unit": detected_unit,
+                    "message": "已自动补全注册信息中的 systemd_unit",
+                }
+                service = settings.get_service(service_id)
+                payload["registered"] = service.model_dump()
+
             status = await executor.service_status(service)
             payload["status"] = status.model_dump(mode="json")
             return json.dumps(payload, ensure_ascii=False, indent=2, default=str)

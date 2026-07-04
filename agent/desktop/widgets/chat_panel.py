@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from PySide6.QtGui import QTextCursor
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -12,6 +13,11 @@ from PySide6.QtWidgets import (
 )
 
 from agent.desktop.async_call import AsyncCall
+from agent.desktop.markdown_render import (
+    format_assistant_message,
+    format_system_message,
+    format_user_message,
+)
 from agent.services.agent_service import AgentService
 
 SESSION_ID = "desktop-default"
@@ -41,6 +47,7 @@ class ChatPanel(QWidget):
         layout.addLayout(head)
 
         self.history = QTextEdit()
+        self.history.setObjectName("chatHistory")
         self.history.setReadOnly(True)
         self.history.setPlaceholderText("例如：road_control 状态怎么样？最近有什么报错？")
 
@@ -83,6 +90,16 @@ class ChatPanel(QWidget):
         self.cancel_btn.clicked.connect(self._hide_confirm)
 
         self._mode = "chat"
+
+    def _scroll_to_bottom(self) -> None:
+        cursor = self.history.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        self.history.setTextCursor(cursor)
+        self.history.ensureCursorVisible()
+
+    def _append_html(self, html: str) -> None:
+        self.history.append(html)
+        self._scroll_to_bottom()
 
     def _on_async_finished(self, result) -> None:
         if self._mode == "pending":
@@ -173,13 +190,10 @@ class ChatPanel(QWidget):
         self.cancel_btn.hide()
 
     def _append_user(self, text: str) -> None:
-        self.history.append(f"<p style='color:#1890FF;margin:4px 0;'><b>你</b> {text}</p>")
+        self._append_html(format_user_message(text))
 
     def _append_assistant(self, text: str) -> None:
-        escaped = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-        self.history.append(
-            f"<p style='color:#262626;margin:4px 0;'><b>Agent</b> {escaped}</p>"
-        )
+        self._append_html(format_assistant_message(text))
 
     def _append_system(self, text: str) -> None:
-        self.history.append(f"<p style='color:#8C8C8C;margin:4px 0;'><i>{text}</i></p>")
+        self._append_html(format_system_message(text))

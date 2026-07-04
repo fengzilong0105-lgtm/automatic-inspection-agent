@@ -41,6 +41,13 @@ QLabel#sidebarLogo {
     border-radius: 8px;
 }
 
+QTextEdit#chatHistory {
+    background-color: #FAFBFC;
+    border: 1px solid #E8ECF0;
+    border-radius: 8px;
+    padding: 8px;
+}
+
 QPushButton#navButton {
     background: transparent;
     border: none;
@@ -226,9 +233,34 @@ QLineEdit, QSpinBox, QComboBox, QTextEdit {
     background-color: #FAFBFC;
     border: 1px solid #D9D9D9;
     border-radius: 6px;
-    padding: 6px 10px;
-    min-height: 32px;
+    padding: 7px 10px;
+    min-height: 22px;
     selection-background-color: #1890FF;
+}
+
+QSpinBox {
+    padding-right: 4px;
+}
+
+QSpinBox::up-button, QSpinBox::down-button {
+    subcontrol-origin: border;
+    width: 20px;
+    background: #F5F5F5;
+    border-left: 1px solid #D9D9D9;
+}
+
+QSpinBox::up-button {
+    subcontrol-position: top right;
+    border-top-right-radius: 6px;
+}
+
+QSpinBox::down-button {
+    subcontrol-position: bottom right;
+    border-bottom-right-radius: 6px;
+}
+
+QSpinBox::up-button:hover, QSpinBox::down-button:hover {
+    background: #E6F4FF;
 }
 
 QLineEdit:focus, QSpinBox:focus, QComboBox:focus, QTextEdit:focus {
@@ -356,6 +388,31 @@ QWizardPage {
 
 QWizard QLabel {
     color: #595959;
+}
+
+QScrollArea#wizardScroll {
+    background: transparent;
+    border: none;
+}
+
+QWidget#wizardPageBody {
+    background: transparent;
+}
+
+QWizardPage QFrame#card {
+    background-color: #FFFFFF;
+}
+
+QTextEdit#wizardResultBox {
+    background-color: #FFFFFF;
+    border: 1px solid #E8ECF0;
+    border-radius: 8px;
+    padding: 10px 12px;
+}
+
+QWizardPage QCheckBox {
+    padding: 4px 0;
+    min-height: 28px;
 }
 
 /* ---- Scrollbars ---- */

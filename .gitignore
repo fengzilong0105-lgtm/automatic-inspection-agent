@@ -10,6 +10,6 @@ config.yaml
 *.db
 .env
 dist/
-build/
+build/*
 !build/*.spec
 *.egg-info/

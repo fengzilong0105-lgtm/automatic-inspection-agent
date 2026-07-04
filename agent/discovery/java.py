@@ -3,13 +3,7 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING
 
-from agent.executor.java_probe import (
-    _CONFIG_SUFFIXES,
-    get_process_details,
-    parse_jar_from_cmd,
-    parse_profile_from_cmd,
-    parse_ps_java_line,
-)
+from agent.executor.systemd_probe import detect_systemd_unit_from_pid
 from agent.models import DiscoveredService, ServiceType
 
 if TYPE_CHECKING:
@@ -66,6 +60,16 @@ async def _build_discovered(
     deploy_dir = details.get("deploy_dir")
     log_path = details["log_candidates"][0] if details.get("log_candidates") else None
     profile = parse_profile_from_cmd(cmd)
+    systemd_unit = await detect_systemd_unit_from_pid(executor, pid)
+
+    evidence = {
+        "source": "ps+jps",
+        "pid": str(pid),
+        "cmdline": cmd[:300],
+        "cwd": deploy_dir or "",
+    }
+    if systemd_unit:
+        evidence["systemd_unit"] = systemd_unit
 
     return DiscoveredService(
         suggested_id=suggested_id,
@@ -75,16 +79,12 @@ async def _build_discovered(
         pid=pid,
         jar_path=jar_path,
         deploy_dir=deploy_dir,
+        systemd_unit=systemd_unit,
         listen_ports=details.get("listen_ports", []),
         log_path=log_path,
         spring_profile=profile,
-        confidence=0.9 if deploy_dir else 0.75,
-        evidence={
-            "source": "ps+jps",
-            "pid": str(pid),
-            "cmdline": cmd[:300],
-            "cwd": deploy_dir or "",
-        },
+        confidence=0.92 if systemd_unit else (0.9 if deploy_dir else 0.75),
+        evidence=evidence,
     )
 
 

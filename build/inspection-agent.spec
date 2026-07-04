@@ -31,6 +31,7 @@ hiddenimports = [
     "PySide6.QtCore",
     "PySide6.QtGui",
     "PySide6.QtWidgets",
+    "PySide6.QtSvg",
     "shiboken6",
     "langchain_openai",
     "langchain_ollama",
