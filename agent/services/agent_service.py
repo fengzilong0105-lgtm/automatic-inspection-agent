@@ -45,6 +45,7 @@ from agent.services.chat_ops import (
     list_conversations,
     list_knowledge_entries,
     load_chat_workspace,
+    run_chat_stream,
     save_chat_memory_settings,
     update_knowledge_entry,
 )
@@ -317,6 +318,23 @@ class AgentService:
                 conversation_id=session_id,
                 message=message,
                 confirmed=confirmed,
+            )
+        )
+
+    def chat_stream(
+        self,
+        message: str,
+        session_id: str = "desktop-default",
+        confirmed: bool = False,
+        on_event=None,
+    ) -> Any:
+        return self._run(
+            run_chat_stream(
+                self.runtime.chat_agent,
+                conversation_id=session_id,
+                message=message,
+                confirmed=confirmed,
+                on_event=on_event,
             )
         )
 

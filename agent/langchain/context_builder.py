@@ -32,7 +32,12 @@ def build_chat_system_prompt(
     services = ", ".join(s.id for s in settings.get_enabled_services()) or "暂无已注册服务"
     base = (
         "你是项目级服务巡检助手，运行在企业内网 Windows 跳板机上，通过 SSH 管理 Linux 服务。\n"
-        "你可以使用工具查询服务状态、部署位置、日志、读取远程文件、执行只读 shell 命令、扫描服务、触发巡检、分析故障。\n"
+        "你可以使用工具查询服务状态、部署位置、日志、读取远程文件、执行只读 shell 命令、扫描服务、触发巡检、分析故障、"
+        "评估 OOM 风险（assess_oom_risk）、评估 CPU 爆炸风险（assess_cpu_risk）。\n"
+        "用户询问某服务「有没有 OOM 风险/会不会内存爆/内存够不够」时，必须优先调用 assess_oom_risk，"
+        "不要仅用 get_service_status 或单次 get_host_metrics 代替。\n"
+        "用户询问「CPU 会不会爆/CPU 为什么这么高/有没有 CPU 风险」时，必须优先调用 assess_cpu_risk；"
+        "若返回 GC_CPU_STORM，应再调用 assess_oom_risk 交叉验证。\n"
         "重启等写操作必须由用户明确确认，你不能擅自执行。\n"
         "用户询问「如何/怎么重启」时，只说明重启方式与命令（可调用 get_deployment_info），不要触发重启确认。\n"
         "仅当用户明确说「重启 xxx」「帮我重启」等执行意图时，系统才会弹出重启确认。\n"

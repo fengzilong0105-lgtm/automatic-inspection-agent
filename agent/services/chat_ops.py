@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 from agent.langchain.chat_graph import ChatAgent
@@ -182,6 +183,111 @@ async def handle_chat_message(
     result["actions_applied"] = applied
     result["compaction_notices"] = compaction_notices
     result["usage"] = await store.get_usage(conversation_id, actions_applied=applied)
+    return result
+
+
+def _emit_stream_event(on_event: Callable[[dict[str, Any]], None] | None, event: dict[str, Any]) -> None:
+    if on_event is not None:
+        on_event(event)
+
+
+async def run_chat_stream(
+    chat_agent: ChatAgent,
+    *,
+    conversation_id: str,
+    message: str,
+    confirmed: bool = False,
+    store: ChatStore | None = None,
+    on_event: Callable[[dict[str, Any]], None] | None = None,
+) -> dict[str, Any]:
+    """Stream chat events to a UI callback and return the final turn result."""
+    store = store or get_chat_store()
+    prep = await prepare_stream_chat(
+        chat_agent,
+        conversation_id,
+        message,
+        confirmed=confirmed,
+        store=store,
+    )
+    applied = prep.get("applied", [])
+    compaction_notices = list(prep.get("notices") or [])
+    for notice in compaction_notices:
+        _emit_stream_event(on_event, {"event": "compaction", "data": notice})
+    if prep.get("type") == "error":
+        _emit_stream_event(on_event, {"event": "error", "data": prep.get("message")})
+        usage = prep.get("usage") or await store.get_usage(conversation_id, actions_applied=applied)
+        _emit_stream_event(on_event, {"event": "usage", "data": usage})
+        return {
+            "type": "error",
+            "message": prep.get("message"),
+            "actions_applied": applied,
+            "compaction_notices": compaction_notices,
+            "usage": usage,
+        }
+
+    assistant_parts: list[str] = []
+    async for chunk in chat_agent.stream_message(
+        conversation_id, message, confirmed=confirmed
+    ):
+        event = chunk.get("event")
+        _emit_stream_event(on_event, chunk)
+        if event == "delta":
+            assistant_parts.append(str(chunk.get("data", "")))
+        elif event == "confirm_restart":
+            usage = await store.get_usage(conversation_id, actions_applied=applied)
+            return {
+                "type": "confirm_restart",
+                "service_id": chunk.get("data", {}).get("service_id", ""),
+                "message": chunk.get("data", {}).get("message", "确认重启？"),
+                "requires_confirm": True,
+                "actions_applied": applied,
+                "compaction_notices": compaction_notices,
+                "usage": usage,
+            }
+        elif event == "error":
+            await store.append_message(
+                conversation_id,
+                role="system",
+                content=str(chunk.get("data") or "对话失败"),
+            )
+            usage = await store.get_usage(conversation_id, actions_applied=applied)
+            return {
+                "type": "error",
+                "message": chunk.get("data"),
+                "actions_applied": applied,
+                "compaction_notices": compaction_notices,
+                "usage": usage,
+            }
+
+    result: dict[str, Any] = {
+        "type": "message",
+        "requires_confirm": False,
+        "actions_applied": applied,
+        "compaction_notices": compaction_notices,
+    }
+    if assistant_parts:
+        assistant_text = "".join(assistant_parts)
+        await store.append_message(
+            conversation_id,
+            role="assistant",
+            content=assistant_text,
+        )
+        memory_info = await process_turn_memories(
+            user_text=message,
+            assistant_text=assistant_text,
+            conversation_id=conversation_id,
+        )
+        if memory_info.get("auto_saved"):
+            chat_agent.invalidate_graph()
+        result["message"] = assistant_text
+        result.update(memory_info)
+        _emit_stream_event(on_event, {"event": "memory", "data": memory_info})
+    else:
+        result["message"] = ""
+
+    usage = await store.get_usage(conversation_id, actions_applied=applied)
+    result["usage"] = usage
+    _emit_stream_event(on_event, {"event": "usage", "data": usage})
     return result
 
 

@@ -220,6 +220,54 @@ def format_user_message(text: str) -> str:
     )
 
 
+def format_assistant_status(status: str) -> str:
+    escaped = escape_html(status)
+    return (
+        '<table width="100%" cellspacing="0" cellpadding="0" style="margin:10px 0;">'
+        "<tr>"
+        '<td width="34" valign="top" style="padding-top:6px;">'
+        '<span style="display:inline-block;background:#F6FFED;color:#389E0D;font-size:11px;'
+        'font-weight:700;padding:2px 7px;border-radius:10px;">AI</span>'
+        "</td>"
+        '<td valign="top">'
+        '<table cellspacing="0" cellpadding="0" width="100%"><tr>'
+        '<td style="background-color:#FFFFFF;border:1px solid #E8ECF0;border-radius:10px;'
+        'border-top-left-radius:2px;padding:10px 14px;color:#8C8C8C;font-size:13px;'
+        'line-height:1.6;">'
+        f'<span style="font-style:italic;">{escaped}</span>'
+        "</td></tr></table></td></tr></table>"
+    )
+
+
+def format_assistant_streaming(text: str, status: str | None = None) -> str:
+    body = render_markdown(text) if text else ""
+    status_html = ""
+    if status:
+        escaped = escape_html(status)
+        status_html = (
+            '<div style="margin-top:8px;padding-top:8px;border-top:1px solid #F0F0F0;'
+            'color:#8C8C8C;font-size:12px;font-style:italic;">'
+            f"{escaped}</div>"
+        )
+    if not body and not status_html:
+        body = '<span style="color:#8C8C8C;font-style:italic;">正在思考…</span>'
+    return (
+        '<table width="100%" cellspacing="0" cellpadding="0" style="margin:10px 0;">'
+        "<tr>"
+        '<td width="34" valign="top" style="padding-top:6px;">'
+        '<span style="display:inline-block;background:#F6FFED;color:#389E0D;font-size:11px;'
+        'font-weight:700;padding:2px 7px;border-radius:10px;">AI</span>'
+        "</td>"
+        '<td valign="top">'
+        '<table cellspacing="0" cellpadding="0" width="100%"><tr>'
+        '<td style="background-color:#FFFFFF;border:1px solid #E8ECF0;border-radius:10px;'
+        'border-top-left-radius:2px;padding:10px 14px;color:#262626;font-size:13px;'
+        'line-height:1.6;">'
+        f"{body}{status_html}"
+        "</td></tr></table></td></tr></table>"
+    )
+
+
 def format_assistant_message(text: str) -> str:
     body = render_markdown(text)
     return (

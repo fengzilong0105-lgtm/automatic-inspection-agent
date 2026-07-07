@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>服务巡检 Agent</title>
-  <link rel="stylesheet" href="/static/style.css?v=18" />
+  <link rel="stylesheet" href="/static/style.css?v=22" />
   <script defer src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js"></script>
 </head>
 <body>
@@ -91,10 +91,9 @@
               <span class="muted" x-show="chatUsage" x-text="chatUsage"></span>
               <button type="button" class="secondary chat-clear-btn" @click="clearChat()" :disabled="chatSending">清空对话</button>
             </div>
-            <p class="chat-tool-status" x-show="chatToolStatus" x-text="chatToolStatus"></p>
             <div class="messages" id="chat-messages">
               <template x-for="(msg, idx) in messages" :key="idx">
-                <div class="chat-turn" :class="msg.role">
+                <div class="chat-turn" :class="[msg.role, msg.streaming ? 'is-streaming' : '']">
                   <div class="chat-avatar" x-text="msg.role === 'user' ? '你' : 'AI'"></div>
                   <div class="chat-bubble">
                     <div class="msg-content" :class="msg.role === 'assistant' ? (msg.streaming ? 'streaming' : 'markdown') : 'plain'" x-html="renderMessage(msg)"></div>
@@ -349,6 +348,6 @@
       </div>
     </div>
   </div>
-  <script src="/static/app.js?v=21"></script>
+  <script src="/static/app.js?v=22"></script>
 </body>
 </html>

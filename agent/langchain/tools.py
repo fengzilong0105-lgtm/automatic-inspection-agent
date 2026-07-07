@@ -23,6 +23,8 @@ from agent.remediation.orchestrator import ActionOrchestrator
 from agent.remediation.pending_writes import get_pending_file_op_store
 from agent.settings import get_settings
 from agent.store.incidents import IncidentStore
+from agent.playbooks.cpu_risk import assess_cpu_risk_to_json
+from agent.playbooks.oom_risk import assess_oom_risk_to_json
 
 
 def _resolve_host(host_id: str | None = None):
@@ -476,6 +478,24 @@ def build_readonly_tools() -> list[StructuredTool]:
             files.append({"name": "deploy_dir", "path": service.deploy_dir})
         return json.dumps(files, ensure_ascii=False, indent=2)
 
+    async def assess_oom_risk(service_id: str) -> str:
+        """评估指定服务的 OOM 风险（堆/Metaspace/容器/主机 OOM Killer）。
+        返回 JSON：risk_level、score、confidence、checks、evidence、recommendations。
+        Java 服务会自动执行 jcmd/jstat（若可用）与 GC 日志分析。"""
+        try:
+            return await assess_oom_risk_to_json(service_id)
+        except Exception as exc:
+            return _tool_error("assess_oom_risk 失败", exc)
+
+    async def assess_cpu_risk(service_id: str) -> str:
+        """评估指定服务的 CPU 爆炸/饱和风险（进程 CPU、主机负载、GC 占 CPU、容器限流）。
+        返回 JSON：risk_level、score、confidence、checks、evidence、recommendations、next_commands。
+        Java 服务会自动 jstat 采样与条件触发 jstack 摘要。"""
+        try:
+            return await assess_cpu_risk_to_json(service_id)
+        except Exception as exc:
+            return _tool_error("assess_cpu_risk 失败", exc)
+
     return [
         StructuredTool.from_function(coroutine=list_services, name="list_services"),
         StructuredTool.from_function(coroutine=get_service_status, name="get_service_status"),
@@ -491,4 +511,6 @@ def build_readonly_tools() -> list[StructuredTool]:
         StructuredTool.from_function(coroutine=list_incidents, name="list_incidents"),
         StructuredTool.from_function(coroutine=analyze_incident, name="analyze_incident"),
         StructuredTool.from_function(coroutine=list_config_files, name="list_config_files"),
+        StructuredTool.from_function(coroutine=assess_oom_risk, name="assess_oom_risk"),
+        StructuredTool.from_function(coroutine=assess_cpu_risk, name="assess_cpu_risk"),
     ]

@@ -368,8 +368,21 @@ function dashboard() {
         return `<div class="md-user-text">${this.escapeHtml(text).replace(/\n/g, "<br>")}</div>`;
       }
       if (msg.streaming) {
-        const body = this.escapeHtml(text).replace(/\n/g, "<br>");
-        return `<div class="md-streaming">${body}<span class="stream-cursor">▋</span></div>`;
+        const parts = [];
+        if (text) {
+          const body = this.escapeHtml(text).replace(/\n/g, "<br>");
+          parts.push(`<div class="md-streaming">${body}<span class="stream-cursor">▋</span></div>`);
+        }
+        if (msg.status || !text) {
+          const status = this.escapeHtml(msg.status || "正在思考…");
+          parts.push(
+            `<div class="ai-thinking${text ? " ai-thinking-sub" : ""}">` +
+              `<span class="spinner" aria-hidden="true"></span>` +
+              `<span class="ai-thinking-text">${status}</span>` +
+            `</div>`
+          );
+        }
+        return parts.join("");
       }
       return this.renderMarkdown(text);
     },
@@ -997,11 +1010,24 @@ function dashboard() {
       this.chatToolStatus = "";
 
       const assistantIdx = this.messages.length;
-      this.messages.push({ role: "assistant", text: "", streaming: true });
+      this.messages.push({
+        role: "assistant",
+        text: "",
+        streaming: true,
+        status: "正在思考…",
+      });
       this.scrollChatToBottom();
 
+      const patchAssistant = (patch) => {
+        this.messages[assistantIdx] = {
+          role: "assistant",
+          ...this.messages[assistantIdx],
+          ...patch,
+        };
+      };
+
       const finishAssistant = (text, streaming = false) => {
-        this.messages[assistantIdx] = { role: "assistant", text, streaming };
+        patchAssistant({ text, streaming, status: null });
       };
 
       try {
@@ -1045,30 +1071,36 @@ function dashboard() {
             const data = payload.data;
             if (event === "delta") {
               const cur = this.messages[assistantIdx];
-              finishAssistant((cur.text || "") + (data || ""), true);
+              patchAssistant({
+                text: (cur.text || "") + (data || ""),
+                streaming: true,
+                status: null,
+              });
               this.scrollChatToBottom();
             } else if (event === "tool_start") {
-              this.chatToolStatus = `正在调用工具: ${data}…`;
+              patchAssistant({ status: `正在调用工具: ${data}…` });
             } else if (event === "tool_end") {
-              this.chatToolStatus = "工具执行完成，正在生成回答…";
+              patchAssistant({ status: "正在整理回答…" });
             } else if (event === "history_reset") {
               const cur = this.messages[assistantIdx];
               const prefix = "（上下文已自动重置）\n\n";
               if (!(cur.text || "").startsWith(prefix)) {
-                finishAssistant(prefix + (cur.text || ""), true);
+                patchAssistant({
+                  text: prefix + (cur.text || ""),
+                  streaming: true,
+                  status: null,
+                });
               }
-              this.chatToolStatus = data || "上下文已重置…";
+              patchAssistant({ status: data || "上下文已重置…" });
             } else if (event === "confirm_restart") {
               this.pendingRestart = data;
               finishAssistant(data.message || "请确认是否重启", false);
-              this.chatToolStatus = "";
               return;
             } else if (event === "confirm_write") {
               this.pendingWrite = data;
-              this.chatToolStatus = "";
+              patchAssistant({ status: "等待你确认文件操作…" });
             } else if (event === "error") {
               finishAssistant(data || "对话处理失败", false);
-              this.chatToolStatus = "";
               return;
             } else if (event === "usage") {
               this.chatUsage = this.formatChatUsage(data);
@@ -1090,7 +1122,6 @@ function dashboard() {
             } else if (event === "done") {
               const cur = this.messages[assistantIdx];
               finishAssistant(cur.text || "已完成查询。", false);
-              this.chatToolStatus = "";
               await this.syncPendingFileOp();
               return;
             }

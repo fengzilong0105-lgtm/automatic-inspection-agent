@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from PySide6.QtCore import QObject, QTimer, Signal
 from PySide6.QtGui import QTextCursor
 from PySide6.QtWidgets import (
     QComboBox,
@@ -16,10 +17,18 @@ from PySide6.QtWidgets import (
 from agent.desktop.async_call import AsyncCall
 from agent.desktop.markdown_render import (
     format_assistant_message,
+    format_assistant_status,
+    format_assistant_streaming,
     format_system_message,
     format_user_message,
 )
 from agent.services.agent_service import AgentService
+
+
+class _StreamEventBridge(QObject):
+    """Thread-safe bridge from background runtime to Qt UI."""
+
+    event = Signal(object)
 
 
 class ChatPanel(QWidget):
@@ -33,6 +42,11 @@ class ChatPanel(QWidget):
         self.pending_memory: dict | None = None
         self.conversation_id: str | None = None
         self._switching_conversation = False
+        self._stream_buffer = ""
+        self._stream_status = "正在思考…"
+        self._stream_start_pos: int | None = None
+        self._stream_bridge = _StreamEventBridge(self)
+        self._stream_bridge.event.connect(self._on_stream_event)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -47,13 +61,13 @@ class ChatPanel(QWidget):
         self.new_conv_btn.setObjectName("secondaryButton")
         self.usage_label = QLabel("上下文 --")
         self.usage_label.setObjectName("mutedText")
-        clear_btn = QPushButton("清空对话")
-        clear_btn.setObjectName("secondaryButton")
+        self.clear_btn = QPushButton("清空对话")
+        self.clear_btn.setObjectName("secondaryButton")
         head.addWidget(title)
         head.addWidget(self.conversation_combo, 1)
         head.addWidget(self.new_conv_btn)
         head.addWidget(self.usage_label)
-        head.addWidget(clear_btn)
+        head.addWidget(self.clear_btn)
         layout.addLayout(head)
 
         self.history = QTextEdit()
@@ -80,22 +94,27 @@ class ChatPanel(QWidget):
         input_row = QHBoxLayout()
         self.input = QLineEdit()
         self.input.setPlaceholderText("输入消息，Enter 发送")
-        send_btn = QPushButton("发送")
-        send_btn.setObjectName("primaryButton")
+        self.send_btn = QPushButton("发送")
+        self.send_btn.setObjectName("primaryButton")
         input_row.addWidget(self.input, 1)
-        input_row.addWidget(send_btn)
+        input_row.addWidget(self.send_btn)
 
         layout.addWidget(self.history, 1)
         layout.addWidget(self.confirm_frame)
         layout.addLayout(input_row)
 
+        self._thinking_timer = QTimer(self)
+        self._thinking_timer.setInterval(450)
+        self._thinking_dots = 0
+        self._thinking_timer.timeout.connect(self._animate_thinking)
+
         self._bridge = AsyncCall(self)
         self._bridge.finished.connect(self._on_async_finished)
-        self._bridge.failed.connect(self._append_system)
+        self._bridge.failed.connect(self._on_async_failed)
 
-        send_btn.clicked.connect(self.send_message)
+        self.send_btn.clicked.connect(self.send_message)
         self.input.returnPressed.connect(self.send_message)
-        clear_btn.clicked.connect(self.clear_chat)
+        self.clear_btn.clicked.connect(self.clear_chat)
         self.new_conv_btn.clicked.connect(self.create_conversation)
         self.conversation_combo.currentIndexChanged.connect(self._on_conversation_changed)
         self.confirm_btn.clicked.connect(self.confirm_pending)
@@ -113,6 +132,96 @@ class ChatPanel(QWidget):
     def _append_html(self, html: str) -> None:
         self.history.append(html)
         self._scroll_to_bottom()
+
+    def _set_chat_busy(self, busy: bool) -> None:
+        self.input.setEnabled(not busy)
+        self.send_btn.setEnabled(not busy)
+        self.new_conv_btn.setEnabled(not busy)
+        self.clear_btn.setEnabled(not busy)
+        self.conversation_combo.setEnabled(not busy)
+
+    def _replace_stream_html(self, html: str) -> None:
+        if self._stream_start_pos is None:
+            self._append_html(html)
+            return
+        cursor = self.history.textCursor()
+        cursor.setPosition(self._stream_start_pos)
+        cursor.movePosition(QTextCursor.MoveOperation.End, QTextCursor.MoveMode.KeepAnchor)
+        cursor.removeSelectedText()
+        cursor.insertHtml(html)
+        self._scroll_to_bottom()
+
+    def _begin_stream(self, status: str) -> None:
+        self._stream_buffer = ""
+        self._stream_status = status
+        cursor = self.history.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        self._stream_start_pos = cursor.position()
+        cursor.insertHtml(format_assistant_status(status))
+        self._scroll_to_bottom()
+        self._thinking_timer.start()
+
+    def _update_stream(self, text: str, status: str | None) -> None:
+        if status is not None:
+            self._stream_status = status
+        self._stream_buffer = text
+        if text:
+            self._thinking_timer.stop()
+            html = format_assistant_streaming(text, status)
+        else:
+            if not self._thinking_timer.isActive():
+                self._thinking_timer.start()
+            html = format_assistant_status(status or self._stream_status)
+        self._replace_stream_html(html)
+
+    def _finalize_stream(self, text: str) -> None:
+        self._thinking_timer.stop()
+        if self._stream_start_pos is not None:
+            self._replace_stream_html(format_assistant_message(text))
+            self._stream_start_pos = None
+        else:
+            self._append_assistant(text)
+        self._stream_buffer = ""
+        self._stream_status = "正在思考…"
+
+    def _cancel_stream(self) -> None:
+        self._thinking_timer.stop()
+        if self._stream_start_pos is not None:
+            cursor = self.history.textCursor()
+            cursor.setPosition(self._stream_start_pos)
+            cursor.movePosition(QTextCursor.MoveOperation.End, QTextCursor.MoveMode.KeepAnchor)
+            cursor.removeSelectedText()
+            self._stream_start_pos = None
+        self._stream_buffer = ""
+        self._stream_status = "正在思考…"
+
+    def _animate_thinking(self) -> None:
+        if self._stream_buffer or self._stream_start_pos is None:
+            return
+        self._thinking_dots = (self._thinking_dots + 1) % 4
+        dots = "·" * (self._thinking_dots + 1)
+        self._replace_stream_html(format_assistant_status(f"{self._stream_status}{dots}"))
+
+    def _emit_stream_event(self, event: dict) -> None:
+        self._stream_bridge.event.emit(event)
+
+    def _on_stream_event(self, event: dict) -> None:
+        evt = event.get("event")
+        if evt == "delta":
+            self._update_stream(self._stream_buffer + str(event.get("data") or ""), None)
+        elif evt == "tool_start":
+            tool = str(event.get("data") or "tool")
+            self._update_stream(self._stream_buffer, f"正在调用工具: {tool}…")
+        elif evt == "tool_end":
+            self._update_stream(self._stream_buffer, "正在整理回答…")
+        elif evt == "history_reset":
+            prefix = "（上下文已自动重置）\n\n"
+            if not self._stream_buffer.startswith(prefix):
+                self._update_stream(prefix + self._stream_buffer, str(event.get("data") or "上下文已重置…"))
+            else:
+                self._update_stream(self._stream_buffer, str(event.get("data") or "上下文已重置…"))
+        elif evt == "compaction":
+            self._append_system(str(event.get("data") or ""))
 
     def _set_usage(self, usage: dict | None) -> None:
         if not usage:
@@ -155,6 +264,11 @@ class ChatPanel(QWidget):
         else:
             self._on_reply(result)
 
+    def _on_async_failed(self, message: str) -> None:
+        self._cancel_stream()
+        self._set_chat_busy(False)
+        self._append_system(message)
+
     def _render_messages(self, messages: list[dict]) -> None:
         self.history.clear()
         for msg in messages:
@@ -176,6 +290,7 @@ class ChatPanel(QWidget):
             return
         self.conversation_id = conv_id
         self._hide_confirm()
+        self._cancel_stream()
         self._mode = "switch"
         self._bridge.submit(self.service.load_chat_workspace(conv_id))
 
@@ -192,8 +307,15 @@ class ChatPanel(QWidget):
         self._append_user(text)
         self.input.clear()
         self._mode = "chat"
+        self._set_chat_busy(True)
+        self._begin_stream("正在思考")
         self._bridge.submit(
-            self.service.chat_message(text, session_id=self.conversation_id, confirmed=False)
+            self.service.chat_stream(
+                text,
+                session_id=self.conversation_id,
+                confirmed=False,
+                on_event=self._emit_stream_event,
+            )
         )
 
     def clear_chat(self) -> None:
@@ -231,7 +353,10 @@ class ChatPanel(QWidget):
             )
 
     def _on_reply(self, result: dict) -> None:
+        self._set_chat_busy(False)
+
         if self._mode == "clear":
+            self._cancel_stream()
             self.history.clear()
             self._set_usage(result.get("usage"))
             self._hide_confirm()
@@ -261,6 +386,7 @@ class ChatPanel(QWidget):
 
         msg_type = result.get("type", "message")
         if msg_type == "confirm_restart":
+            self._cancel_stream()
             self.pending_restart = {"service_id": result.get("service_id", "")}
             self.pending_write = None
             self._append_assistant(result.get("message", "确认重启？"))
@@ -270,6 +396,7 @@ class ChatPanel(QWidget):
             self.cancel_btn.show()
             return
         if msg_type == "error":
+            self._cancel_stream()
             self._append_system(result.get("message", str(result)))
             self._set_usage(result.get("usage"))
             return
@@ -277,7 +404,13 @@ class ChatPanel(QWidget):
         for notice in result.get("compaction_notices") or []:
             self._append_system(notice)
 
-        self._append_assistant(result.get("message") or result.get("reply") or str(result))
+        reply_text = result.get("message") or result.get("reply") or ""
+        if reply_text:
+            self._finalize_stream(reply_text)
+        elif self._stream_buffer:
+            self._finalize_stream(self._stream_buffer)
+        else:
+            self._cancel_stream()
         self._set_usage(result.get("usage"))
         auto_saved = result.get("auto_saved") or []
         if auto_saved:
