@@ -49,6 +49,10 @@ class ServiceConfig(BaseModel):
     compose_file: str | None = None
     compose_service: str | None = None
     health_url: str | None = None
+    health_deep_url: str | None = None
+    business_probe_url: str | None = None
+    business_probe_expect_code: int = 200
+    business_probe_body_contains: str | None = None
     log_path: str | None = None
     config_files: list[ConfigFileRef] = Field(default_factory=list)
     active_profile: str | None = None

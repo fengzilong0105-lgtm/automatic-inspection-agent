@@ -52,6 +52,14 @@ def _is_corrupt_history_error(exc: Exception) -> bool:
     return any(marker in text for marker in _CORRUPT_HISTORY_MARKERS)
 
 
+def _stream_event_data(event: dict, key: str, default=None):
+    """Read a field from astream_events payload; data may be dict or non-dict."""
+    data = event.get("data")
+    if isinstance(data, dict):
+        return data.get(key, default)
+    return default
+
+
 def _extract_chunk_text(chunk) -> str:
     content = getattr(chunk, "content", None)
     if not content:
@@ -289,7 +297,7 @@ class ChatAgent:
                 async for event in graph.astream_events(inputs, config=config, version="v2"):
                     kind = event.get("event")
                     if kind == "on_chat_model_stream":
-                        chunk = event.get("data", {}).get("chunk")
+                        chunk = _stream_event_data(event, "chunk")
                         delta = _extract_chunk_text(chunk)
                         if delta:
                             yield {"event": "delta", "data": delta}
@@ -297,7 +305,7 @@ class ChatAgent:
                         tool_name = event.get("name") or "tool"
                         yield {"event": "tool_start", "data": str(tool_name)}
                     elif kind == "on_tool_end":
-                        output = event.get("data", {}).get("output")
+                        output = _stream_event_data(event, "output")
                         yield {"event": "tool_end", "data": _extract_tool_output_text(output)[:800]}
                         pending = parse_file_op_pending(output)
                         if pending:

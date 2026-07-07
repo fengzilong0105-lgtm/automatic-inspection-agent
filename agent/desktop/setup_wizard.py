@@ -4,8 +4,8 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
-    QFormLayout,
     QFrame,
+    QHBoxLayout,
     QLabel,
     QLineEdit,
     QMessageBox,
@@ -36,14 +36,6 @@ from agent.models import ServiceConfig
 from agent.brand import PRODUCT_NAME
 from agent.desktop.assets import load_app_icon
 from agent.services.agent_service import AgentService
-
-
-def _style_form(form: QFormLayout) -> None:
-    form.setSpacing(12)
-    form.setVerticalSpacing(12)
-    form.setHorizontalSpacing(16)
-    form.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-    form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
 
 
 def _style_field(widget: QLineEdit | QSpinBox | QComboBox) -> None:
@@ -80,6 +72,56 @@ def _make_result_box(max_height: int = 120) -> QTextEdit:
     return box
 
 
+def _make_form_card(title: str, desc: str | None = None) -> tuple[Card, QVBoxLayout]:
+    card = Card(padding=22, with_shadow=False)
+    header = QVBoxLayout()
+    header.setSpacing(4)
+
+    title_label = QLabel(title)
+    title_label.setObjectName("wizardSectionTitle")
+    header.addWidget(title_label)
+
+    if desc:
+        desc_label = WordWrapLabel(desc)
+        desc_label.setObjectName("wizardSectionDesc")
+        header.addWidget(desc_label)
+
+    card.content_layout.addLayout(header)
+    card.content_layout.addSpacing(6)
+    return card, card.content_layout
+
+
+def _add_field_block(
+    layout: QVBoxLayout,
+    label: str,
+    field: QWidget,
+    *,
+    hint: str | None = None,
+) -> None:
+    block = QVBoxLayout()
+    block.setSpacing(6)
+
+    label_widget = QLabel(label)
+    label_widget.setObjectName("wizardFieldLabel")
+    block.addWidget(label_widget)
+    block.addWidget(field)
+
+    if hint:
+        hint_label = WordWrapLabel(hint)
+        hint_label.setObjectName("wizardFieldHint")
+        block.addWidget(hint_label)
+
+    layout.addLayout(block)
+
+
+def _add_inline_checkbox(layout: QVBoxLayout, field: QCheckBox) -> None:
+    row = QHBoxLayout()
+    row.setContentsMargins(0, 0, 0, 0)
+    row.addWidget(field)
+    row.addStretch()
+    layout.addLayout(row)
+
+
 class SSHPage(QWizardPage):
     def __init__(self, service: AgentService, parent=None) -> None:
         super().__init__(parent)
@@ -89,7 +131,6 @@ class SSHPage(QWizardPage):
 
         layout = _build_wizard_page(self)
 
-        form = QFormLayout()
         self.host_id = QLineEdit("prod-01")
         self.host_name = QLineEdit("生产服务器")
         self.ssh_host = QLineEdit()
@@ -117,31 +158,30 @@ class SSHPage(QWizardPage):
         ):
             _style_field(field)
 
-        _style_form(form)
-        form.addRow("主机 ID", self.host_id)
-        form.addRow("显示名称", self.host_name)
-        form.addRow("IP / 域名", self.ssh_host)
-        form.addRow("端口", self.ssh_port)
-        form.addRow("用户名", self.ssh_user)
-        form.addRow("私钥路径（可选）", self.key_file)
-        form.addRow("密码（可选）", self.password)
-        form.addRow("", self.use_sudo)
-        form.addRow("sudo 密码", self.sudo_password)
-
-        form_card = Card(padding=20)
-        form_card.content_layout.addLayout(form)
+        form_card, form_layout = _make_form_card(
+            "连接信息",
+            "建议先完成 SSH 连通性测试。需要读 root 目录时，再开启 sudo su。",
+        )
+        _add_field_block(form_layout, "主机 ID", self.host_id)
+        _add_field_block(form_layout, "显示名称", self.host_name)
+        _add_field_block(form_layout, "IP / 域名", self.ssh_host)
+        _add_field_block(form_layout, "端口", self.ssh_port)
+        _add_field_block(form_layout, "用户名", self.ssh_user)
+        _add_field_block(form_layout, "私钥路径（可选）", self.key_file)
+        _add_field_block(form_layout, "密码（可选）", self.password)
+        _add_inline_checkbox(form_layout, self.use_sudo)
+        _add_field_block(form_layout, "sudo 密码", self.sudo_password)
 
         test_btn = QPushButton("测试连接")
         test_btn.setObjectName("primaryButton")
         test_btn.clicked.connect(self.test_ssh)
 
-        result_title = QLabel("测试结果")
-        result_title.setObjectName("fieldLabel")
+        result_card, result_layout = _make_form_card("测试结果")
+        result_layout.addWidget(self.result)
 
         layout.addWidget(form_card)
         layout.addWidget(test_btn)
-        layout.addWidget(result_title)
-        layout.addWidget(self.result)
+        layout.addWidget(result_card)
         layout.addStretch()
 
         self._bridge = AsyncCall(self)
@@ -202,7 +242,6 @@ class LLMPage(QWizardPage):
 
         layout = _build_wizard_page(self)
 
-        form = QFormLayout()
         self.provider = QComboBox()
         self.provider.addItems(["openai", "ollama"])
         self.base_url = QLineEdit("https://api.openai.com/v1")
@@ -216,15 +255,15 @@ class LLMPage(QWizardPage):
             _style_field(field)
 
         self.provider.currentTextChanged.connect(self._sync_provider_fields)
-        _style_form(form)
-        form.addRow("Provider", self.provider)
-        form.addRow("API Base URL", self.base_url)
-        form.addRow("模型名", self.model)
-        form.addRow("API Key", self.api_key)
-        form.addRow("Ollama 地址", self.ollama_url)
-
-        form_card = Card(padding=20)
-        form_card.content_layout.addLayout(form)
+        form_card, form_layout = _make_form_card(
+            "模型与接口",
+            "支持 OpenAI 兼容接口和本地 Ollama。切换 Provider 后会自动启用对应字段。",
+        )
+        _add_field_block(form_layout, "Provider", self.provider)
+        _add_field_block(form_layout, "API Base URL", self.base_url)
+        _add_field_block(form_layout, "模型名", self.model)
+        _add_field_block(form_layout, "API Key", self.api_key)
+        _add_field_block(form_layout, "Ollama 地址", self.ollama_url)
 
         test_btn = QPushButton("测试 LLM")
         test_btn.setObjectName("primaryButton")
@@ -232,7 +271,9 @@ class LLMPage(QWizardPage):
 
         layout.addWidget(form_card)
         layout.addWidget(test_btn)
-        layout.addWidget(self.result)
+        result_card, result_layout = _make_form_card("测试结果")
+        result_layout.addWidget(self.result)
+        layout.addWidget(result_card)
         layout.addStretch()
 
         self._bridge = AsyncCall(self)
@@ -283,7 +324,6 @@ class FeishuPage(QWizardPage):
 
         layout = _build_wizard_page(self)
 
-        form = QFormLayout()
         self.enabled = QCheckBox("启用飞书告警")
         self.app_id = QLineEdit()
         self.app_secret = QLineEdit()
@@ -298,27 +338,23 @@ class FeishuPage(QWizardPage):
         for field in (self.app_id, self.app_secret, self.chat_id, self.bot_command_chat_id):
             _style_field(field)
 
-        _style_form(form)
-        form.addRow("", self.enabled)
-        form.addRow("App ID", self.app_id)
-        form.addRow("App Secret", self.app_secret)
-        form.addRow("告警 Chat ID", self.chat_id)
-
         bot_hint = WordWrapLabel("群内 @机器人 只读指令（可选，需在开放平台配置长连接）")
         bot_hint.setObjectName("mutedText")
 
-        bot_form = QFormLayout()
-        _style_form(bot_form)
-        bot_form.addRow("", self.bot_command_enabled)
-        bot_form.addRow("指令群 Chat ID", self.bot_command_chat_id)
-        bot_form.addRow("", self.bot_require_at_mention)
-
-        form_card = Card(padding=20)
-        form_card.content_layout.addLayout(form)
-        form_card.content_layout.addSpacing(4)
-        form_card.content_layout.addWidget(bot_hint)
-        form_card.content_layout.addSpacing(8)
-        form_card.content_layout.addLayout(bot_form)
+        form_card, form_layout = _make_form_card(
+            "飞书配置",
+            "可选。启用后，系统会把告警推送到群里；也可开启群内只读问答。",
+        )
+        _add_inline_checkbox(form_layout, self.enabled)
+        _add_field_block(form_layout, "App ID", self.app_id)
+        _add_field_block(form_layout, "App Secret", self.app_secret)
+        _add_field_block(form_layout, "告警 Chat ID", self.chat_id)
+        form_layout.addSpacing(4)
+        form_layout.addWidget(bot_hint)
+        form_layout.addSpacing(4)
+        _add_inline_checkbox(form_layout, self.bot_command_enabled)
+        _add_field_block(form_layout, "指令群 Chat ID", self.bot_command_chat_id)
+        _add_inline_checkbox(form_layout, self.bot_require_at_mention)
 
         test_btn = QPushButton("发送测试消息")
         test_btn.setObjectName("primaryButton")
@@ -326,7 +362,9 @@ class FeishuPage(QWizardPage):
 
         layout.addWidget(form_card)
         layout.addWidget(test_btn)
-        layout.addWidget(self.result)
+        result_card, result_layout = _make_form_card("发送结果")
+        result_layout.addWidget(self.result)
+        layout.addWidget(result_card)
         layout.addStretch()
 
         self._bridge = AsyncCall(self)
@@ -383,8 +421,17 @@ class ScanPage(QWizardPage):
         self.result = _make_result_box(240)
         self.discovered: list[dict] = []
 
-        layout.addWidget(self.scan_btn)
-        layout.addWidget(self.result)
+        intro_card, intro_layout = _make_form_card(
+            "服务扫描",
+            "会读取当前 SSH 配置并扫描 Java、Docker、Compose 与常见中间件，结果可在完成后直接注册。",
+        )
+        intro_layout.addWidget(self.scan_btn)
+
+        result_card, result_layout = _make_form_card("扫描结果")
+        result_layout.addWidget(self.result)
+
+        layout.addWidget(intro_card)
+        layout.addWidget(result_card)
         layout.addStretch()
 
         self._bridge = AsyncCall(self)

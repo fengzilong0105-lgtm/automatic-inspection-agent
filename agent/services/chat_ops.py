@@ -235,10 +235,12 @@ async def run_chat_stream(
             assistant_parts.append(str(chunk.get("data", "")))
         elif event == "confirm_restart":
             usage = await store.get_usage(conversation_id, actions_applied=applied)
+            data = chunk.get("data")
+            data_dict = data if isinstance(data, dict) else {}
             return {
                 "type": "confirm_restart",
-                "service_id": chunk.get("data", {}).get("service_id", ""),
-                "message": chunk.get("data", {}).get("message", "确认重启？"),
+                "service_id": data_dict.get("service_id", ""),
+                "message": data_dict.get("message", "确认重启？"),
                 "requires_confirm": True,
                 "actions_applied": applied,
                 "compaction_notices": compaction_notices,

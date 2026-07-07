@@ -69,3 +69,33 @@ CPU_LOG_PATTERN = (
     "timeout|too many threads|unable to create new native thread|"
     "rebalance|OutOfMemoryError"
 )
+
+
+@dataclass(frozen=True)
+class FalseAliveThresholds:
+    tcp_connect_timeout_seconds: int = 3
+    health_curl_timeout_seconds: int = 5
+
+
+DEFAULT_FALSE_ALIVE_THRESHOLDS = FalseAliveThresholds()
+
+
+@dataclass(frozen=True)
+class FalseHealthyThresholds:
+    health_curl_timeout_seconds: int = 8
+    health_latency_warn_seconds: float = 3.0
+    health_latency_fail_seconds: float = 10.0
+    log_tail_lines: int = 500
+    log_error_warn_count: int = 3
+    log_error_fail_count: int = 5
+    log_business_error_warn_count: int = 2
+
+
+DEFAULT_FALSE_HEALTHY_THRESHOLDS = FalseHealthyThresholds()
+
+FALSE_HEALTHY_LOG_PATTERN = (
+    "ERROR|Exception|FATAL|"
+    "timeout|timed out|503|502|504|"
+    "CircuitBreaker|circuit breaker|"
+    "NullPointerException|Connection refused|Broken pipe"
+)

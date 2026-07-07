@@ -120,6 +120,9 @@ def _compress_get_deployment_info(text: str, *, max_bytes: int = 4096) -> str:
     except json.JSONDecodeError:
         return text[:max_bytes] + ("\n[已截断]" if len(text) > max_bytes else "")
 
+    if not isinstance(payload, dict):
+        return text[:max_bytes] + ("\n[已截断]" if len(text) > max_bytes else "")
+
     if len(text.encode("utf-8", errors="ignore")) <= max_bytes:
         return text
 
@@ -140,6 +143,11 @@ def _compress_analyze_incident(text: str, *, log_limit: int = 2000) -> str:
     try:
         payload = json.loads(text)
     except json.JSONDecodeError:
+        if len(text) <= log_limit:
+            return text
+        return text[:log_limit] + f"\n[已截断，原长 {len(text)} 字符]"
+
+    if not isinstance(payload, dict):
         if len(text) <= log_limit:
             return text
         return text[:log_limit] + f"\n[已截断，原长 {len(text)} 字符]"

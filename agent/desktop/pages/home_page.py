@@ -5,6 +5,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QSizePolicy,
     QStackedWidget,
     QVBoxLayout,
     QWidget,
@@ -69,21 +70,19 @@ class HomePage(QWidget):
         self.card_bad = ClickableStatCard("异常服务", "0", hint="点击查看列表", accent="danger")
         self.card_ok.clicked.connect(lambda: self._open_service_list("ok"))
         self.card_bad.clicked.connect(lambda: self._open_service_list("bad"))
+        self.incidents_btn = QPushButton("告警记录")
+        self.incidents_btn.setObjectName("alertButton")
+        self.incidents_btn.setMinimumWidth(108)
+        self.incidents_btn.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
+        self.incidents_btn.clicked.connect(self.go_incidents.emit)
         stats_row.addWidget(self.card_ok, 1)
         stats_row.addWidget(self.card_bad, 1)
+        stats_row.addWidget(self.incidents_btn, 0)
         overview_layout.addLayout(stats_row)
 
         self.status_label = QLabel("")
         self.status_label.setObjectName("fieldLabel")
         overview_layout.addWidget(self.status_label)
-
-        actions = QHBoxLayout()
-        self.incidents_btn = QPushButton("告警记录")
-        self.incidents_btn.setObjectName("alertButton")
-        self.incidents_btn.clicked.connect(self.go_incidents.emit)
-        actions.addWidget(self.incidents_btn)
-        actions.addStretch()
-        overview_layout.addLayout(actions)
 
         layout.addWidget(overview_card)
 

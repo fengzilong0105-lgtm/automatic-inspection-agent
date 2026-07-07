@@ -406,6 +406,8 @@ QWidget#wizardPageBody {
 
 QWizardPage QFrame#card {
     background-color: #FFFFFF;
+    border: 1px solid #E5EAF1;
+    border-radius: 12px;
 }
 
 QTextEdit#wizardResultBox {
@@ -418,6 +420,30 @@ QTextEdit#wizardResultBox {
 QWizardPage QCheckBox {
     padding: 4px 0;
     min-height: 28px;
+}
+
+QLabel#wizardSectionTitle {
+    color: #1F2937;
+    font-size: 15px;
+    font-weight: 600;
+}
+
+QLabel#wizardSectionDesc {
+    color: #6B7280;
+    font-size: 12px;
+}
+
+QLabel#wizardFieldLabel {
+    color: #475467;
+    font-size: 12px;
+    font-weight: 600;
+    background: transparent;
+    padding: 0;
+}
+
+QLabel#wizardFieldHint {
+    color: #8C8C8C;
+    font-size: 12px;
 }
 
 /* ---- Scrollbars ---- */

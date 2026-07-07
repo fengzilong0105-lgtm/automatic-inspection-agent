@@ -3,6 +3,13 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING
 
+from agent.executor.java_probe import (
+    _CONFIG_SUFFIXES,
+    get_process_details,
+    parse_jar_from_cmd,
+    parse_profile_from_cmd,
+    parse_ps_java_line,
+)
 from agent.executor.systemd_probe import detect_systemd_unit_from_pid
 from agent.models import DiscoveredService, ServiceType
 

@@ -24,6 +24,8 @@ from agent.remediation.pending_writes import get_pending_file_op_store
 from agent.settings import get_settings
 from agent.store.incidents import IncidentStore
 from agent.playbooks.cpu_risk import assess_cpu_risk_to_json
+from agent.playbooks.false_alive import assess_false_alive_to_json
+from agent.playbooks.false_healthy import assess_false_healthy_to_json
 from agent.playbooks.oom_risk import assess_oom_risk_to_json
 
 
@@ -89,6 +91,8 @@ def parse_file_op_pending(output: str | object) -> dict | None:
                 return None
         else:
             return None
+    if not isinstance(payload, dict):
+        return None
     op_id = payload.get("op_id") or payload.get("write_id")
     if payload.get("status") == "pending_confirm" and op_id:
         payload.setdefault("op_id", op_id)
@@ -496,6 +500,22 @@ def build_readonly_tools() -> list[StructuredTool]:
         except Exception as exc:
             return _tool_error("assess_cpu_risk 失败", exc)
 
+    async def assess_false_alive(service_id: str) -> str:
+        """评估指定服务是否存在假活风险（进程/systemd 显示运行中，但端口或健康检查不可达）。
+        返回 JSON：risk_level、score、confidence、checks、evidence、recommendations、next_commands。"""
+        try:
+            return await assess_false_alive_to_json(service_id)
+        except Exception as exc:
+            return _tool_error("assess_false_alive 失败", exc)
+
+    async def assess_false_healthy(service_id: str) -> str:
+        """评估指定服务是否存在假健康风险（health 通过但组件/日志/业务探针异常）。
+        返回 JSON：risk_level、score、confidence、checks、evidence、recommendations、next_commands。"""
+        try:
+            return await assess_false_healthy_to_json(service_id)
+        except Exception as exc:
+            return _tool_error("assess_false_healthy 失败", exc)
+
     return [
         StructuredTool.from_function(coroutine=list_services, name="list_services"),
         StructuredTool.from_function(coroutine=get_service_status, name="get_service_status"),
@@ -513,4 +533,6 @@ def build_readonly_tools() -> list[StructuredTool]:
         StructuredTool.from_function(coroutine=list_config_files, name="list_config_files"),
         StructuredTool.from_function(coroutine=assess_oom_risk, name="assess_oom_risk"),
         StructuredTool.from_function(coroutine=assess_cpu_risk, name="assess_cpu_risk"),
+        StructuredTool.from_function(coroutine=assess_false_alive, name="assess_false_alive"),
+        StructuredTool.from_function(coroutine=assess_false_healthy, name="assess_false_healthy"),
     ]
