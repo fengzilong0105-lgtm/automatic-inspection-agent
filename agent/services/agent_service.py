@@ -27,6 +27,7 @@ from agent.config_mgr.setup import (
 from agent.discovery.orchestrator import scan_host, to_service_config
 from agent.executor.java_probe import list_java_processes
 from agent.executor.ssh import get_executor_registry
+from agent.local_files import resolve_local_download_path
 from agent.models import AppConfig, ServiceConfig
 from agent.runtime.background import BackgroundRuntime, get_runtime
 from agent.settings import UNCHANGED_SECRET, get_settings
@@ -205,6 +206,139 @@ class AgentService:
         config = settings.config.model_copy(update={"active_service_id": service_id})
         settings.save(config)
         return {"active_service_id": service_id}
+
+    def download_remote_file(
+        self,
+        remote_path: str,
+        *,
+        host_id: str | None = None,
+        service_id: str | None = None,
+        local_path: str | None = None,
+    ) -> Any:
+        return self._run(
+            self._download_remote_file(
+                remote_path,
+                host_id=host_id,
+                service_id=service_id,
+                local_path=local_path,
+            )
+        )
+
+    async def _download_remote_file(
+        self,
+        remote_path: str,
+        *,
+        host_id: str | None = None,
+        service_id: str | None = None,
+        local_path: str | None = None,
+    ) -> dict[str, Any]:
+        settings = get_settings()
+        remote_path = remote_path.strip()
+        if not remote_path.startswith("/"):
+            raise ValueError("请提供 Linux 绝对路径，例如 /tmp/data.sql")
+
+        if service_id:
+            service = settings.get_service(service_id)
+            host = settings.get_host(service.host_id)
+        elif host_id:
+            host = settings.get_host(settings.resolve_host_id(host_id))
+        else:
+            active_id = settings.config.active_host_id
+            if active_id:
+                host = settings.get_host(active_id)
+            elif settings.config.hosts:
+                host = settings.config.hosts[0]
+            else:
+                raise ValueError("未配置任何主机")
+
+        target_path = resolve_local_download_path(
+            local_path,
+            remote_path,
+            data_dir=settings.data_dir,
+        )
+        executor = get_executor_registry().get(host.id, host)
+        result = await executor.download_file(remote_path, target_path)
+        payload = result.model_dump()
+        payload["host_name"] = host.name
+        payload["ssh_host"] = host.ssh.host
+        return payload
+
+    def collect_remote_artifact(
+        self,
+        command: str,
+        remote_output_path: str,
+        *,
+        host_id: str | None = None,
+        service_id: str | None = None,
+        local_path: str | None = None,
+        timeout_seconds: int = 300,
+    ) -> Any:
+        return self._run(
+            self._collect_remote_artifact(
+                command,
+                remote_output_path,
+                host_id=host_id,
+                service_id=service_id,
+                local_path=local_path,
+                timeout_seconds=timeout_seconds,
+            )
+        )
+
+    async def _collect_remote_artifact(
+        self,
+        command: str,
+        remote_output_path: str,
+        *,
+        host_id: str | None = None,
+        service_id: str | None = None,
+        local_path: str | None = None,
+        timeout_seconds: int = 300,
+    ) -> dict[str, Any]:
+        settings = get_settings()
+        timeout_seconds = max(10, min(int(timeout_seconds), 900))
+
+        if service_id:
+            service = settings.get_service(service_id)
+            host = settings.get_host(service.host_id)
+        elif host_id:
+            host = settings.get_host(settings.resolve_host_id(host_id))
+        else:
+            active_id = settings.config.active_host_id
+            if active_id:
+                host = settings.get_host(active_id)
+            elif settings.config.hosts:
+                host = settings.config.hosts[0]
+            else:
+                raise ValueError("未配置任何主机")
+
+        target_path = resolve_local_download_path(
+            local_path,
+            remote_output_path,
+            data_dir=settings.data_dir,
+        )
+        executor = get_executor_registry().get(host.id, host)
+        collect_result = await executor.collect_artifact(
+            command,
+            remote_output_path,
+            timeout=timeout_seconds,
+        )
+        download_result = await executor.download_file(
+            collect_result.remote_output_path,
+            target_path,
+            timeout=timeout_seconds,
+        )
+        return {
+            "host_id": host.id,
+            "host_name": host.name,
+            "ssh_host": host.ssh.host,
+            "command": collect_result.command,
+            "remote_output_path": collect_result.remote_output_path,
+            "bytes_written": collect_result.bytes_written,
+            "line_count": collect_result.line_count,
+            "local_path": download_result.local_path,
+            "bytes_downloaded": download_result.bytes_downloaded,
+            "used_sudo_staging": download_result.used_sudo_staging,
+        }
 
     # --- status / incidents / inspection ---
 

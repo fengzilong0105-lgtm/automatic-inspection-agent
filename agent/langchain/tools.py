@@ -8,8 +8,10 @@ from langchain_core.tools import StructuredTool
 from agent.config_mgr.hosts import enrich_service_systemd_unit
 from agent.discovery.orchestrator import scan_host, to_service_config
 from agent.executor.command_policy import format_command_result, validate_remote_command
+from agent.executor.collect_policy import is_collect_output_path_allowed, normalize_collect_output_path
 from agent.executor.write_policy import is_path_allowed, normalize_remote_path
 from agent.executor.ssh import get_executor_registry
+from agent.local_files import resolve_local_download_path
 from agent.langchain.context_builder import build_diagnosis_context
 from agent.langchain.llm_factory import get_llm
 from agent.langchain.tool_compress import compress_tool_output
@@ -347,6 +349,86 @@ def build_readonly_tools() -> list[StructuredTool]:
         except Exception as exc:
             return _tool_error("delete_remote_file 失败", exc)
 
+    async def download_remote_file(
+        remote_path: str,
+        local_path: str | None = None,
+        host_id: str | None = None,
+        service_id: str | None = None,
+    ) -> str:
+        """将 Linux 主机上的文件下载到当前 Windows 机器。local_path 留空时默认保存到本机 Downloads。"""
+        try:
+            remote_path = remote_path.strip()
+            if not remote_path.startswith("/"):
+                return "请提供 Linux 绝对路径，例如 /tmp/sta_b5_data.sql"
+
+            host = _resolve_tool_host(host_id, service_id, settings)
+            target_path = resolve_local_download_path(
+                local_path,
+                remote_path,
+                data_dir=settings.data_dir,
+            )
+            executor = registry.get(host.id, host)
+            result = await executor.download_file(remote_path, target_path)
+            payload = result.model_dump()
+            payload["host_name"] = host.name
+            payload["ssh_host"] = host.ssh.host
+            payload["note"] = "文件已保存到当前 Windows 机器；若 local_path 为空则默认落到 Downloads。"
+            return json.dumps(payload, ensure_ascii=False, indent=2)
+        except Exception as exc:
+            return _tool_error("download_remote_file 失败", exc)
+
+    async def collect_remote_artifact(
+        command: str,
+        remote_output_path: str,
+        local_path: str | None = None,
+        host_id: str | None = None,
+        service_id: str | None = None,
+        timeout_seconds: int = 300,
+    ) -> str:
+        """在 Linux 主机上执行采集命令生成结果文件，再自动下载到当前 Windows 机器。输出文件仅允许位于 /tmp、/var/tmp 或 /dev/shm。"""
+        try:
+            timeout_seconds = max(10, min(int(timeout_seconds), 900))
+            output_path = normalize_collect_output_path(remote_output_path)
+            if not is_collect_output_path_allowed(output_path):
+                return "remote_output_path 仅允许写入 /tmp、/var/tmp 或 /dev/shm，例如 /tmp/export.sql"
+
+            host = _resolve_tool_host(host_id, service_id, settings)
+            target_path = resolve_local_download_path(
+                local_path,
+                output_path,
+                data_dir=settings.data_dir,
+            )
+            executor = registry.get(host.id, host)
+            collect_result = await executor.collect_artifact(
+                command,
+                output_path,
+                timeout=timeout_seconds,
+            )
+            download_result = await executor.download_file(
+                collect_result.remote_output_path,
+                target_path,
+                timeout=timeout_seconds,
+            )
+            payload = {
+                "host_id": host.id,
+                "host_name": host.name,
+                "ssh_host": host.ssh.host,
+                "command": collect_result.command,
+                "remote_output_path": collect_result.remote_output_path,
+                "bytes_written": collect_result.bytes_written,
+                "line_count": collect_result.line_count,
+                "local_path": download_result.local_path,
+                "bytes_downloaded": download_result.bytes_downloaded,
+                "used_sudo_staging": download_result.used_sudo_staging,
+                "note": (
+                    "若命令本身输出到 stdout，可直接写 command；"
+                    "若命令需要指定输出文件，请在 command 中使用 {{output_path}} 占位符。"
+                ),
+            }
+            return json.dumps(payload, ensure_ascii=False, indent=2)
+        except Exception as exc:
+            return _tool_error("collect_remote_artifact 失败", exc)
+
     async def discovery_scan(host_id: str) -> str:
         """扫描指定 Linux 主机上的 Java/Docker/Compose/中间件服务。"""
         try:
@@ -523,6 +605,8 @@ def build_readonly_tools() -> list[StructuredTool]:
         StructuredTool.from_function(coroutine=get_host_metrics, name="get_host_metrics"),
         StructuredTool.from_function(coroutine=read_log, name="read_log"),
         StructuredTool.from_function(coroutine=read_remote_file, name="read_remote_file"),
+        StructuredTool.from_function(coroutine=download_remote_file, name="download_remote_file"),
+        StructuredTool.from_function(coroutine=collect_remote_artifact, name="collect_remote_artifact"),
         StructuredTool.from_function(coroutine=write_remote_file, name="write_remote_file"),
         StructuredTool.from_function(coroutine=delete_remote_file, name="delete_remote_file"),
         StructuredTool.from_function(coroutine=run_remote_command, name="run_remote_command"),

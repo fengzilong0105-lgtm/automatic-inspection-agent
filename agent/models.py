@@ -171,6 +171,22 @@ class CommandResult(BaseModel):
     exit_code: int
 
 
+class FileDownloadResult(BaseModel):
+    host_id: str
+    remote_path: str
+    local_path: str
+    bytes_downloaded: int
+    used_sudo_staging: bool = False
+
+
+class ArtifactCollectionResult(BaseModel):
+    host_id: str
+    remote_output_path: str
+    bytes_written: int
+    line_count: int | None = None
+    command: str
+
+
 class ServiceStatus(BaseModel):
     service_id: str
     running: bool

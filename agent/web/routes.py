@@ -25,6 +25,7 @@ from agent.executor.ssh import get_executor_registry
 from agent.executor.java_probe import find_java_process
 from agent.feishu.notifier import FeishuNotifier
 from agent.langchain.chat_graph import ChatAgent
+from agent.local_files import resolve_local_download_path
 from agent.models import AppConfig, ServiceConfig
 from agent.monitor.loop import MonitorLoop
 from agent.remediation.orchestrator import ActionOrchestrator
@@ -122,6 +123,22 @@ class KnowledgeConfirmRequest(BaseModel):
 
 class ChatMemorySettingsRequest(BaseModel):
     auto_extract: bool
+
+
+class DownloadRemoteFileRequest(BaseModel):
+    remote_path: str
+    local_path: str | None = None
+    host_id: str | None = None
+    service_id: str | None = None
+
+
+class CollectRemoteArtifactRequest(BaseModel):
+    command: str
+    remote_output_path: str
+    local_path: str | None = None
+    host_id: str | None = None
+    service_id: str | None = None
+    timeout_seconds: int = 300
 
 
 def _auth_dependency(
@@ -718,6 +735,103 @@ def create_app() -> FastAPI:
         executor = get_executor_registry().get(host_id, host)
         result = await executor.test_connection()
         return result.model_dump()
+
+    @app.post("/api/files/download")
+    async def download_remote_file(
+        body: DownloadRemoteFileRequest, _: None = Depends(_auth_dependency)
+    ) -> dict[str, Any]:
+        settings = get_settings()
+        remote_path = body.remote_path.strip()
+        if not remote_path.startswith("/"):
+            raise HTTPException(status_code=400, detail="请提供 Linux 绝对路径，例如 /tmp/data.sql")
+
+        if body.service_id:
+            service = settings.get_service(body.service_id)
+            host = settings.get_host(service.host_id)
+        elif body.host_id:
+            host = settings.get_host(settings.resolve_host_id(body.host_id))
+        else:
+            active_id = settings.config.active_host_id
+            if active_id:
+                host = settings.get_host(active_id)
+            elif settings.config.hosts:
+                host = settings.config.hosts[0]
+            else:
+                raise HTTPException(status_code=400, detail="未配置任何主机")
+
+        try:
+            target_path = resolve_local_download_path(
+                body.local_path,
+                remote_path,
+                data_dir=settings.data_dir,
+            )
+            executor = get_executor_registry().get(host.id, host)
+            result = await executor.download_file(remote_path, target_path)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+        payload = result.model_dump()
+        payload["host_name"] = host.name
+        payload["ssh_host"] = host.ssh.host
+        return payload
+
+    @app.post("/api/files/collect-download")
+    async def collect_remote_artifact(
+        body: CollectRemoteArtifactRequest, _: None = Depends(_auth_dependency)
+    ) -> dict[str, Any]:
+        settings = get_settings()
+        timeout_seconds = max(10, min(int(body.timeout_seconds), 900))
+
+        if body.service_id:
+            service = settings.get_service(body.service_id)
+            host = settings.get_host(service.host_id)
+        elif body.host_id:
+            host = settings.get_host(settings.resolve_host_id(body.host_id))
+        else:
+            active_id = settings.config.active_host_id
+            if active_id:
+                host = settings.get_host(active_id)
+            elif settings.config.hosts:
+                host = settings.config.hosts[0]
+            else:
+                raise HTTPException(status_code=400, detail="未配置任何主机")
+
+        try:
+            target_path = resolve_local_download_path(
+                body.local_path,
+                body.remote_output_path,
+                data_dir=settings.data_dir,
+            )
+            executor = get_executor_registry().get(host.id, host)
+            collect_result = await executor.collect_artifact(
+                body.command,
+                body.remote_output_path,
+                timeout=timeout_seconds,
+            )
+            download_result = await executor.download_file(
+                collect_result.remote_output_path,
+                target_path,
+                timeout=timeout_seconds,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+        return {
+            "host_id": host.id,
+            "host_name": host.name,
+            "ssh_host": host.ssh.host,
+            "command": collect_result.command,
+            "remote_output_path": collect_result.remote_output_path,
+            "bytes_written": collect_result.bytes_written,
+            "line_count": collect_result.line_count,
+            "local_path": download_result.local_path,
+            "bytes_downloaded": download_result.bytes_downloaded,
+            "used_sudo_staging": download_result.used_sudo_staging,
+        }
 
     if STATIC_DIR.exists():
         app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")

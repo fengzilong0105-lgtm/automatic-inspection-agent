@@ -248,7 +248,7 @@ python -m agent.launcher
 
 基于 **LangChain + LangGraph ReAct** 架构，Agent 可自主决定「思考 → 调用工具 → 观察结果 → 继续推理」的循环。
 
-**14 个内置 Tool：**
+**内置 Tool：**
 
 | 类别 | Tool | 说明 |
 |------|------|------|
@@ -258,6 +258,8 @@ python -m agent.launcher
 | 查询 | `get_host_metrics` | 主机 CPU/内存/磁盘 |
 | 日志/文件 | `read_log` | 读取服务日志 |
 | 日志/文件 | `read_remote_file` | 读取远程文件 |
+| 日志/文件 | `download_remote_file` | 下载远程文件到当前 Windows 机器 |
+| 日志/文件 | `collect_remote_artifact` | 采集远程数据成文件并自动下载到本机 |
 | 日志/文件 | `list_config_files` | 列出服务配置文件 |
 | 执行 | `run_remote_command` | 执行只读 shell 命令 |
 | 写操作 | `write_remote_file` | 创建/修改远程文件（需确认） |
@@ -266,6 +268,10 @@ python -m agent.launcher
 | 巡检 | `run_inspection` | 立即执行一轮巡检 |
 | 告警 | `list_incidents` | 列出历史告警 |
 | 告警 | `analyze_incident` | 分析指定告警 |
+| 诊断 | `assess_oom_risk` | 评估 OOM / 内存风险 |
+| 诊断 | `assess_cpu_risk` | 评估 CPU 风险 |
+| 诊断 | `assess_false_alive` | 评估假活风险 |
+| 诊断 | `assess_false_healthy` | 评估假健康风险 |
 
 **其他 AI 能力：**
 
@@ -278,7 +284,8 @@ python -m agent.launcher
 ### 运维操作
 
 - **服务重启**：systemd / Docker / Compose，经用户确认后执行
-- **远程文件操作**：创建、修改、删除，逐次弹出确认框
+- **远程文件操作**：读取、下载、创建、修改、删除；写操作逐次弹出确认框
+- **远程数据取回**：可先在 Linux 上采集/导出为文件，再自动下载到 Windows 本地
 - **命令策略**：只读命令白名单 + 写操作人工门禁
 - **冷却限制**：防止频繁重启（默认 15 分钟内最多 3 次）
 

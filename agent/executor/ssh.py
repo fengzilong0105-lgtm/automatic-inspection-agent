@@ -2,15 +2,30 @@ from __future__ import annotations
 
 import asyncio
 import shlex
+import uuid
 from pathlib import Path, PurePosixPath
 
 import asyncssh
 
+from agent.executor.collect_policy import (
+    build_collect_command,
+    is_collect_output_path_allowed,
+    normalize_collect_output_path,
+)
 from agent.executor.base import Executor
 from agent.executor.java_probe import find_java_process
 from agent.executor.middleware_probe import probe_middleware_process
 from agent.executor.systemd_probe import detect_systemd_unit_from_pid, probe_systemd_unit
-from agent.models import CommandResult, HostConfig, HostMetrics, ServiceConfig, ServiceStatus, ServiceType
+from agent.models import (
+    CommandResult,
+    ArtifactCollectionResult,
+    FileDownloadResult,
+    HostConfig,
+    HostMetrics,
+    ServiceConfig,
+    ServiceStatus,
+    ServiceType,
+)
 
 
 def _posix_quote(value: str) -> str:
@@ -133,6 +148,120 @@ class SSHRemoteExecutor:
         quoted_path = shlex.quote(path)
         inner = f"rm -f {quoted_path} && test ! -e {quoted_path}"
         return await self.run(inner, timeout=60)
+
+    async def download_file(
+        self,
+        remote_path: str,
+        local_path: str | Path,
+        *,
+        timeout: int = 300,
+    ) -> FileDownloadResult:
+        remote_path = remote_path.strip()
+        if not remote_path.startswith("/"):
+            raise ValueError("remote_path 必须为 Linux 绝对路径")
+
+        target = Path(local_path).expanduser().resolve(strict=False)
+        target.parent.mkdir(parents=True, exist_ok=True)
+
+        source_path = remote_path
+        staging_path: str | None = None
+        used_sudo_staging = False
+
+        try:
+            if self.host.ssh.use_sudo_su:
+                check = await self.run(f"test -r {shlex.quote(remote_path)} && echo yes || true", timeout=20)
+                if check.stdout.strip() != "yes":
+                    filename = PurePosixPath(remote_path).name or "download.bin"
+                    staging_path = f"/tmp/steadyops-download-{uuid.uuid4().hex}-{filename}"
+                    copy_result = await self.run(
+                        " && ".join(
+                            [
+                                f"cp {shlex.quote(remote_path)} {shlex.quote(staging_path)}",
+                                f"chown {shlex.quote(self.host.ssh.user)} {shlex.quote(staging_path)}",
+                                f"chmod 600 {shlex.quote(staging_path)}",
+                            ]
+                        ),
+                        timeout=60,
+                    )
+                    if copy_result.exit_code != 0:
+                        raise RuntimeError(copy_result.stderr or copy_result.stdout or "准备下载文件失败")
+                    source_path = staging_path
+                    used_sudo_staging = True
+
+            conn = await self._get_conn()
+
+            async def _download_via_sftp() -> int:
+                async with conn.start_sftp_client() as sftp:
+                    attrs = await sftp.stat(source_path)
+                    await sftp.get(source_path, str(target))
+                    size = getattr(attrs, "size", None)
+                    if isinstance(size, int) and size >= 0:
+                        return size
+                return target.stat().st_size
+
+            bytes_downloaded = await asyncio.wait_for(_download_via_sftp(), timeout=timeout)
+            return FileDownloadResult(
+                host_id=self.host_id,
+                remote_path=remote_path,
+                local_path=str(target),
+                bytes_downloaded=bytes_downloaded,
+                used_sudo_staging=used_sudo_staging,
+            )
+        except (
+            asyncssh.Error,
+            asyncssh.misc.ChannelOpenError,
+            asyncssh.misc.ConnectionLost,
+            asyncssh.DisconnectError,
+            OSError,
+        ) as exc:
+            self._conn = None
+            raise RuntimeError(f"下载失败: {exc}") from exc
+        finally:
+            if staging_path:
+                await self.run(f"rm -f {shlex.quote(staging_path)}", timeout=30, _retry=False)
+
+    async def collect_artifact(
+        self,
+        command: str,
+        remote_output_path: str,
+        *,
+        timeout: int = 300,
+    ) -> ArtifactCollectionResult:
+        output_path = normalize_collect_output_path(remote_output_path)
+        if not is_collect_output_path_allowed(output_path):
+            raise ValueError("remote_output_path 仅允许写入 /tmp、/var/tmp 或 /dev/shm")
+
+        parent = PurePosixPath(output_path).parent.as_posix()
+        temp_path = f"{parent}/.steadyops-{uuid.uuid4().hex}.tmp"
+        collect_cmd = build_collect_command(command, temp_path)
+        inner = (
+            "set -e; "
+            f"rm -f {shlex.quote(temp_path)} {shlex.quote(output_path)}; "
+            f"{collect_cmd}; "
+            f"test -e {shlex.quote(temp_path)}; "
+            f"mv {shlex.quote(temp_path)} {shlex.quote(output_path)}"
+        )
+        result = await self.run(inner, timeout=timeout)
+        if result.exit_code != 0:
+            raise RuntimeError(result.stderr or result.stdout or "采集命令执行失败")
+
+        stat_result = await self.run(
+            f"wc -c < {shlex.quote(output_path)} && wc -l < {shlex.quote(output_path)}",
+            timeout=30,
+        )
+        if stat_result.exit_code != 0:
+            raise RuntimeError(stat_result.stderr or stat_result.stdout or "采集结果校验失败")
+
+        lines = [line.strip() for line in stat_result.stdout.splitlines() if line.strip()]
+        byte_count = int(lines[0]) if lines and lines[0].isdigit() else 0
+        line_count = int(lines[1]) if len(lines) > 1 and lines[1].isdigit() else None
+        return ArtifactCollectionResult(
+            host_id=self.host_id,
+            remote_output_path=output_path,
+            bytes_written=byte_count,
+            line_count=line_count,
+            command=command,
+        )
 
     async def get_metrics(self) -> HostMetrics:
         metrics = await self._get_metrics_psutil()
