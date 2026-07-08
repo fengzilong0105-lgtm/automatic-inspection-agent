@@ -20,6 +20,8 @@ def run_desktop_app() -> int:
     app = QApplication(sys.argv)
     app.setApplicationName(ORG_NAME)
     app.setOrganizationName(ORG_NAME)
+    # Keep process alive when main window is hidden to tray.
+    app.setQuitOnLastWindowClosed(False)
     app_icon = load_app_icon()
     if not app_icon.isNull():
         app.setWindowIcon(app_icon)
@@ -50,6 +52,8 @@ def run_desktop_app() -> int:
         QMessageBox.critical(None, "启动失败", str(exc))
         code = 1
     finally:
+        if window is not None:
+            window.tray.hide()
         shutdown_runtime()
 
     return code

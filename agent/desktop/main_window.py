@@ -1,6 +1,16 @@
 from __future__ import annotations
 
-from PySide6.QtWidgets import QHBoxLayout, QMainWindow, QStackedWidget, QStatusBar, QVBoxLayout, QWidget
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QCloseEvent
+from PySide6.QtWidgets import (
+    QApplication,
+    QHBoxLayout,
+    QMainWindow,
+    QStackedWidget,
+    QStatusBar,
+    QVBoxLayout,
+    QWidget,
+)
 
 from agent.desktop.assets import load_app_icon
 from agent.desktop.pages.home_page import HomePage
@@ -8,6 +18,7 @@ from agent.desktop.pages.incidents_page import IncidentsPage
 from agent.desktop.pages.settings_page import SettingsPage
 from agent.desktop.widgets.sidebar import Sidebar
 from agent.desktop.widgets.top_bar import TopBar
+from agent.desktop.widgets.tray import TrayController
 from agent.brand import PRODUCT_NAME
 from agent.services.agent_service import AgentService
 
@@ -16,11 +27,19 @@ class MainWindow(QMainWindow):
     def __init__(self, service: AgentService, parent=None) -> None:
         super().__init__(parent)
         self.service = service
+        self._force_quit = False
+        self._tray_hint_shown = False
         self.setWindowTitle(PRODUCT_NAME)
         app_icon = load_app_icon()
         if not app_icon.isNull():
             self.setWindowIcon(app_icon)
         self.resize(1280, 800)
+
+        self.tray = TrayController(app_icon, self)
+        self.tray.show_requested.connect(self.show_from_tray)
+        self.tray.quit_requested.connect(self.quit_application)
+        if self.tray.available:
+            self.tray.show()
 
         root = QWidget()
         root.setObjectName("centralRoot")
@@ -120,6 +139,50 @@ class MainWindow(QMainWindow):
             self.reload_hosts()
             self.settings_page.load_form()
             self.incidents_page.refresh()
+
+    def show_from_tray(self) -> None:
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+
+    def quit_application(self) -> None:
+        self._force_quit = True
+        self.tray.hide()
+        self.close()
+        app = QApplication.instance()
+        if app is not None:
+            app.quit()
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        if self._force_quit or not self.tray.available:
+            event.accept()
+            return
+
+        event.ignore()
+        self.hide()
+        if not self._tray_hint_shown:
+            self._tray_hint_shown = True
+            self.tray.notify(
+                PRODUCT_NAME,
+                "应用仍在后台运行。点击右下角托盘图标可重新打开控制台。",
+            )
+
+    def changeEvent(self, event) -> None:
+        super().changeEvent(event)
+        if (
+            event.type() == event.Type.WindowStateChange
+            and self.isMinimized()
+            and self.tray.available
+            and not self._force_quit
+        ):
+            self.hide()
+            self.setWindowState(self.windowState() & ~Qt.WindowState.WindowMinimized)
+            if not self._tray_hint_shown:
+                self._tray_hint_shown = True
+                self.tray.notify(
+                    PRODUCT_NAME,
+                    "应用仍在后台运行。点击右下角托盘图标可重新打开控制台。",
+                )
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
