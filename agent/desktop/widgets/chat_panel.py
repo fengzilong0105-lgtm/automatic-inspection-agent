@@ -34,6 +34,8 @@ class _StreamEventBridge(QObject):
 class ChatPanel(QWidget):
     """Embeddable AI chat panel with multi-conversation support."""
 
+    memory_updated = Signal()
+
     def __init__(self, service: AgentService, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.service = service
@@ -382,6 +384,7 @@ class ChatPanel(QWidget):
             self._append_system("已记住该条信息")
             self._hide_confirm()
             self._mode = "chat"
+            self.memory_updated.emit()
             return
 
         msg_type = result.get("type", "message")
@@ -415,6 +418,7 @@ class ChatPanel(QWidget):
         auto_saved = result.get("auto_saved") or []
         if auto_saved:
             self._append_system(f"已自动记住 {len(auto_saved)} 条信息")
+            self.memory_updated.emit()
         suggestions = result.get("memory_suggestions") or []
         if suggestions:
             self.pending_memory = suggestions[0]

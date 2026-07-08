@@ -50,6 +50,7 @@ class MainWindow(QMainWindow):
         self.stack.addWidget(self.settings_page)
 
         self.home_page.go_incidents.connect(lambda: self._on_page_changed(1))
+        self.home_page.chat_panel.memory_updated.connect(self.settings_page.load_memory)
 
         self.sidebar.page_changed.connect(self._on_page_changed)
 
@@ -73,6 +74,8 @@ class MainWindow(QMainWindow):
             self.home_page.stack.setCurrentIndex(0)
         if index == 1:
             self.incidents_page.refresh()
+        elif index == 2:
+            self.settings_page.load_memory()
 
     def _run_inspection(self) -> None:
         self._on_page_changed(0)
