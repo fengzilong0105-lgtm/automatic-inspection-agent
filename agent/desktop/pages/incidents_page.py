@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
@@ -26,6 +26,8 @@ from agent.services.agent_service import AgentService
 
 
 class IncidentsPage(QWidget):
+    case_created = Signal(str)
+
     def __init__(self, service: AgentService, parent=None) -> None:
         super().__init__(parent)
         self.service = service
@@ -57,9 +59,13 @@ class IncidentsPage(QWidget):
         refresh_btn = QPushButton("刷新")
         refresh_btn.setObjectName("secondaryButton")
         refresh_btn.clicked.connect(self.refresh)
+        report_btn = QPushButton("生成报告")
+        report_btn.setObjectName("primaryButton")
+        report_btn.clicked.connect(self._generate_report)
         header_layout.addWidget(title)
         header_layout.addWidget(self.status)
         header_layout.addStretch()
+        header_layout.addWidget(report_btn)
         header_layout.addWidget(refresh_btn)
 
         self.table = QTableWidget(0, 5)
@@ -93,6 +99,39 @@ class IncidentsPage(QWidget):
         self._bridge.finished.connect(self._render)
         self._bridge.failed.connect(lambda msg: self.status.setText(f"加载失败: {msg}"))
 
+        self._report_bridge = AsyncCall(self)
+        self._report_bridge.finished.connect(self._on_report_created)
+        self._report_bridge.failed.connect(
+            lambda msg: self.status.setText(f"生成报告失败: {msg}")
+        )
+
+    def _selected_incident_id(self) -> str | None:
+        row = self.table.currentRow()
+        if row < 0:
+            return None
+        item = self.table.item(row, 0)
+        if not item:
+            return None
+        incident_id = item.data(Qt.ItemDataRole.UserRole)
+        return str(incident_id) if incident_id else None
+
+    def _generate_report(self) -> None:
+        incident_id = self._selected_incident_id()
+        if not incident_id:
+            self.status.setText("请先选择一条告警")
+            return
+        self.status.setText("正在生成报告（调用 LLM，请稍候）…")
+        self._report_bridge.submit(
+            self.service.create_problem_case_from_incident(incident_id)
+        )
+
+    def _on_report_created(self, case: dict) -> None:
+        case_id = case.get("id", "")
+        title = case.get("title", "")
+        self.status.setText(f"报告已就绪：{title}")
+        if case_id:
+            self.case_created.emit(str(case_id))
+
     def refresh(self) -> None:
         self.status.setText("加载中…")
         self._bridge.submit(self.service.list_incidents())
@@ -125,7 +164,9 @@ class IncidentsPage(QWidget):
             summary = item.get("summary", "") or ""
             tooltip = f"{title}\n{summary}".strip()
 
-            self.table.setItem(row, 0, make_text_item(created, tooltip=created))
+            time_item = make_text_item(created, tooltip=created)
+            time_item.setData(Qt.ItemDataRole.UserRole, item.get("id", ""))
+            self.table.setItem(row, 0, time_item)
             self.table.setItem(row, 1, make_text_item(service_id, tooltip=service_id))
             self.table.setItem(row, 2, make_text_item(title, tooltip=tooltip))
 

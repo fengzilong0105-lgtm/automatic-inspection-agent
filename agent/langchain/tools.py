@@ -23,6 +23,7 @@ from agent.models import DiagnosisResult, ServiceType
 from agent.monitor.loop import MonitorLoop
 from agent.remediation.orchestrator import ActionOrchestrator
 from agent.remediation.pending_writes import get_pending_file_op_store
+from agent.ops.orchestrator import get_case_orchestrator
 from agent.settings import get_settings
 from agent.store.incidents import IncidentStore
 from agent.playbooks.cpu_risk import assess_cpu_risk_to_json
@@ -598,6 +599,69 @@ def build_readonly_tools() -> list[StructuredTool]:
         except Exception as exc:
             return _tool_error("assess_false_healthy 失败", exc)
 
+    async def create_problem_report(
+        service_id: str | None = None,
+        incident_id: str | None = None,
+        hint: str | None = None,
+        conversation_id: str | None = None,
+    ) -> str:
+        """从当前对话、指定服务或告警创建问题报告草稿。
+        生成后不会自动发布，需运维在【问题报告】页确认后发布到飞书。"""
+        try:
+            orchestrator = get_case_orchestrator()
+            await orchestrator.init()
+            conv_id = (conversation_id or chat_session_id.get() or "").strip()
+
+            if incident_id:
+                case = await orchestrator.create_from_incident(incident_id)
+            elif conv_id:
+                sid = service_id or settings.config.active_service_id
+                if not sid:
+                    raise ValueError("请指定 service_id，或在配置中设置 active_service_id")
+                case = await orchestrator.create_from_chat(conv_id, sid, hint=hint)
+            else:
+                sid = service_id or settings.config.active_service_id
+                if not sid:
+                    raise ValueError("请指定 service_id，或在配置中设置 active_service_id")
+                case = await orchestrator.create_from_service(sid, hint=hint)
+
+            payload = {
+                "case_id": case.id,
+                "title": case.title,
+                "status": case.status.value,
+                "service_id": case.service_id,
+                "host_id": case.host_id,
+                "severity": case.severity,
+                "message": "报告草稿已生成，请到 SteadyOps【问题报告】页确认内容后发布。",
+            }
+            return _tool_result(
+                "create_problem_report",
+                json.dumps(payload, ensure_ascii=False, indent=2, default=str),
+            )
+        except Exception as exc:
+            return _tool_error("create_problem_report 失败", exc)
+
+    async def list_problem_reports(limit: int = 10) -> str:
+        """列出最近的问题报告草稿与已发布案例。"""
+        try:
+            cases = await get_case_orchestrator().list_cases(limit=limit)
+            payload = [
+                {
+                    "id": case.id,
+                    "title": case.title,
+                    "status": case.status.value,
+                    "service_id": case.service_id,
+                    "severity": case.severity,
+                    "source": case.source.value,
+                    "updated_at": case.updated_at.isoformat(),
+                    "feishu_doc_url": case.feishu_doc_url,
+                }
+                for case in cases
+            ]
+            return json.dumps(payload, ensure_ascii=False, indent=2, default=str)
+        except Exception as exc:
+            return _tool_error("list_problem_reports 失败", exc)
+
     return [
         StructuredTool.from_function(coroutine=list_services, name="list_services"),
         StructuredTool.from_function(coroutine=get_service_status, name="get_service_status"),
@@ -619,4 +683,6 @@ def build_readonly_tools() -> list[StructuredTool]:
         StructuredTool.from_function(coroutine=assess_cpu_risk, name="assess_cpu_risk"),
         StructuredTool.from_function(coroutine=assess_false_alive, name="assess_false_alive"),
         StructuredTool.from_function(coroutine=assess_false_healthy, name="assess_false_healthy"),
+        StructuredTool.from_function(coroutine=create_problem_report, name="create_problem_report"),
+        StructuredTool.from_function(coroutine=list_problem_reports, name="list_problem_reports"),
     ]

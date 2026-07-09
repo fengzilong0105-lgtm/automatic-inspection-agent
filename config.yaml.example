@@ -63,4 +63,18 @@ autonomy:
   # write_path_whitelist:
   #   - /etc/systemd/system/*.service
 
+ops_report:
+  auto_draft_on_incident: false
+  auto_publish: false
+  initiator_default: 运维值班
+  feishu:
+    archive_folder_token: ""   # 飞书云文档归档文件夹 token
+    tenant_subdomain: ""       # 企业子域名，如 mycompany → https://mycompany.feishu.cn/docx/...
+    bitable_app_token: ""      # M3 多维表格
+    bitable_table_id: ""
+    notify_chat_id: ""         # M3 发布通知群，留空则复用 feishu.alert_chat_id
+
 data_dir: ./data
+
+ops_report:
+  initiator_default: 运维值班

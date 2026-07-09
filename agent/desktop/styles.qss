@@ -202,6 +202,22 @@ QPushButton#primaryButton:pressed {
     background-color: #096DD9;
 }
 
+QPushButton:disabled,
+QPushButton#primaryButton:disabled,
+QPushButton#secondaryButton:disabled,
+QPushButton#tableActionButton:disabled,
+QPushButton#tableActionButtonDanger:disabled {
+    background-color: #F5F5F5;
+    border-color: #E8E8E8;
+    color: #BFBFBF;
+}
+
+QPushButton#primaryButton:disabled {
+    background-color: #F0F0F0;
+    border-color: #E8E8E8;
+    color: #BFBFBF;
+}
+
 QPushButton#secondaryButton {
     background-color: #FFFFFF;
     border: 1px solid #D9D9D9;
@@ -210,6 +226,42 @@ QPushButton#secondaryButton {
 QPushButton#secondaryButton:hover {
     color: #1890FF;
     border-color: #1890FF;
+}
+
+QPushButton#tableActionButton {
+    background-color: #FFFFFF;
+    border: 1px solid #D9D9D9;
+    border-radius: 6px;
+    color: #262626;
+    font-size: 12px;
+    font-weight: 500;
+    min-height: 28px;
+    max-height: 28px;
+    padding: 0 12px;
+}
+
+QPushButton#tableActionButton:hover {
+    color: #1890FF;
+    border-color: #1890FF;
+    background-color: #F0F7FF;
+}
+
+QPushButton#tableActionButtonDanger {
+    background-color: #FFF2F0;
+    border: 1px solid #FFA39E;
+    border-radius: 6px;
+    color: #CF1322;
+    font-size: 12px;
+    font-weight: 500;
+    min-height: 28px;
+    max-height: 28px;
+    padding: 0 12px;
+}
+
+QPushButton#tableActionButtonDanger:hover {
+    color: #FFFFFF;
+    border-color: #FF4D4F;
+    background-color: #FF4D4F;
 }
 
 QPushButton#alertButton {

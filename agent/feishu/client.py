@@ -36,6 +36,43 @@ async def get_tenant_access_token(app_id: str, app_secret: str) -> str:
     return str(token)
 
 
+async def feishu_api_request(
+    method: str,
+    path: str,
+    *,
+    app_id: str,
+    app_secret: str,
+    json_body: dict[str, Any] | None = None,
+    params: dict[str, Any] | None = None,
+    timeout: float = 30,
+) -> dict[str, Any]:
+    if not app_id or not app_secret:
+        raise FeishuAPIError("App ID 或 App Secret 未配置")
+
+    token = await get_tenant_access_token(app_id, app_secret)
+    url = f"{FEISHU_API_BASE}{path}"
+    headers = {"Authorization": f"Bearer {token}"}
+
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        response = await client.request(
+            method,
+            url,
+            headers=headers,
+            json=json_body,
+            params=params,
+        )
+        if response.status_code >= 400:
+            hint = _http_error_hint(path, response.status_code, response.text[:500])
+            raise FeishuAPIError(f"HTTP {response.status_code}: {response.text[:500]}. {hint}".strip())
+        data = response.json()
+
+    if data.get("code") != 0:
+        msg = str(data.get("msg") or data)
+        hint = _doc_error_hint(data.get("code"), msg)
+        raise FeishuAPIError(f"飞书 API 失败: {msg}. {hint}".strip(), code=data.get("code"))
+    return data.get("data") or {}
+
+
 async def send_feishu_text(
     *,
     app_id: str,
@@ -72,6 +109,19 @@ async def send_feishu_text(
     return data.get("data") or {}
 
 
+def _http_error_hint(path: str, status: int, body: str) -> str:
+    text = body.lower()
+    if status == 403 and "/bitable/" in path:
+        return (
+            "多维表格写入被拒绝：除开放平台开通 bitable:app 权限外，"
+            "还需在该多维表格内「… → 添加文档应用 → 选择本应用 → 可编辑」。"
+            "若开启高级权限，请给应用管理权限。"
+        )
+    if status == 403 and ("docx" in path or "/drive/" in path):
+        return "云文档权限不足：请为应用开通 docx:document，并将应用加入目标文件夹（可编辑）。"
+    return _doc_error_hint(None, text)
+
+
 def _error_hint(code: Any, msg: str) -> str:
     text = msg.lower()
     if code in (99991663, 99991664) or "permission" in text or "scope" in text:
@@ -81,3 +131,19 @@ def _error_hint(code: Any, msg: str) -> str:
     if "app" in text and ("secret" in text or "invalid" in text):
         return "请检查 App ID / App Secret 是否正确。"
     return "请确认机器人已加入目标群，且应用具备发消息权限。"
+
+
+def _doc_error_hint(code: Any, msg: str) -> str:
+    text = msg.lower()
+    if code in (99991663, 99991664) or "permission" in text or "scope" in text:
+        return "请确认应用已开通 docx:document 权限并已发布版本。"
+    if code in (1770039, 1770040) or "folder" in text:
+        return "请检查 archive_folder_token 是否正确，并为应用开通文件夹权限。"
+    if "bitable" in text or "base:" in text or "table" in text:
+        return (
+            "请确认应用已开通 bitable:app 权限并已发布；"
+            "并在目标多维表格内「添加文档应用」授予本应用可编辑权限。"
+        )
+    if code == 99991400:
+        return "飞书接口限频，请稍后重试。"
+    return _error_hint(code, msg)

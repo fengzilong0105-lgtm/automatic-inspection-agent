@@ -22,6 +22,22 @@ SEVERITY_COLORS: dict[str, tuple[str, str]] = {
     "P2": ("#E6F4FF", "#096DD9"),
 }
 
+CASE_STATUS_LABELS: dict[str, str] = {
+    "draft": "草稿",
+    "reviewing": "待审核",
+    "published": "已发布",
+    "ticket_created": "已建工单",
+    "closed": "已关闭",
+}
+
+CASE_STATUS_COLORS: dict[str, tuple[str, str]] = {
+    "draft": ("#F5F5F5", "#595959"),
+    "reviewing": ("#FFF7E6", "#D46B08"),
+    "published": ("#E6F4FF", "#096DD9"),
+    "ticket_created": ("#F6FFED", "#389E0D"),
+    "closed": ("#F5F5F5", "#8C8C8C"),
+}
+
 
 def _enum_token(value: object) -> str:
     if value is None:
@@ -66,3 +82,21 @@ def incident_status_colors(value: object) -> tuple[str, str]:
 def incident_severity_colors(value: object) -> tuple[str, str]:
     token = _enum_token(value).upper()
     return SEVERITY_COLORS.get(token, ("#F5F5F5", "#595959"))
+
+
+def format_case_status(value: object) -> str:
+    token = _enum_token(value)
+    if token in CASE_STATUS_LABELS:
+        return CASE_STATUS_LABELS[token]
+    return str(value) if value else "-"
+
+
+def case_status_colors(value: object) -> tuple[str, str]:
+    token = _enum_token(value)
+    return CASE_STATUS_COLORS.get(token, ("#F5F5F5", "#595959"))
+
+
+def is_case_closed(case: dict) -> bool:
+    if _enum_token(case.get("status")) == "closed":
+        return True
+    return str(case.get("ticket_status") or "").strip() == "已关闭"

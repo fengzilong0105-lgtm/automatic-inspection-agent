@@ -55,8 +55,18 @@ from agent.services.chat_ops import (
     save_chat_memory_settings,
     update_knowledge_entry,
 )
+from agent.services.ops_case_ops import (
+    close_problem_case,
+    create_problem_case_from_incident,
+    get_problem_case,
+    list_problem_cases,
+    publish_problem_case,
+    sync_problem_case_ticket,
+    update_problem_case,
+)
 from agent.settings import Settings, UNCHANGED_SECRET, get_settings
 from agent.store.incidents import IncidentStore
+from agent.ops.auto_draft import handle_incident_alert
 
 STATIC_DIR = get_static_dir()
 NO_CACHE = "no-cache, no-store, must-revalidate"
@@ -125,6 +135,30 @@ class ChatMemorySettingsRequest(BaseModel):
     auto_extract: bool
 
 
+class CreateCaseFromIncidentRequest(BaseModel):
+    incident_id: str
+    initiator: str | None = None
+
+
+class UpdateProblemCaseRequest(BaseModel):
+    title: str | None = None
+    description: str | None = None
+    initiator: str | None = None
+    report_markdown: str | None = None
+    analysis: str | None = None
+    impact: str | None = None
+    recommendations: list[str] | None = None
+    status: str | None = None
+    assignee: str | None = None
+    ticket_status: str | None = None
+    close_note: str | None = None
+
+
+class CloseProblemCaseRequest(BaseModel):
+    assignee: str | None = None
+    note: str | None = None
+
+
 class DownloadRemoteFileRequest(BaseModel):
     remote_path: str
     local_path: str | None = None
@@ -168,7 +202,7 @@ def create_app() -> FastAPI:
         await store.init()
 
         async def on_alert(incident):
-            await feishu.send_incident_card(incident)
+            await handle_incident_alert(incident, feishu)
 
         monitor = MonitorLoop(on_alert=on_alert, incident_store=store)
         app.state.monitor = monitor
@@ -508,6 +542,79 @@ def create_app() -> FastAPI:
         await store.init()
         incidents = await store.list_incidents()
         return [i.model_dump() for i in incidents]
+
+    @app.get("/api/ops/cases")
+    async def ops_list_cases(
+        limit: int = 100, _: None = Depends(_auth_dependency)
+    ) -> list[dict[str, Any]]:
+        return await list_problem_cases(limit=limit)
+
+    @app.post("/api/ops/cases/from-incident")
+    async def ops_create_case_from_incident(
+        body: CreateCaseFromIncidentRequest, _: None = Depends(_auth_dependency)
+    ) -> dict[str, Any]:
+        try:
+            return await create_problem_case_from_incident(
+                body.incident_id, initiator=body.initiator
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.get("/api/ops/cases/{case_id}")
+    async def ops_get_case(case_id: str, _: None = Depends(_auth_dependency)) -> dict[str, Any]:
+        try:
+            return await get_problem_case(case_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.put("/api/ops/cases/{case_id}")
+    async def ops_update_case(
+        case_id: str,
+        body: UpdateProblemCaseRequest,
+        _: None = Depends(_auth_dependency),
+    ) -> dict[str, Any]:
+        try:
+            payload = body.model_dump(exclude_unset=True)
+            return await update_problem_case(case_id, payload)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.post("/api/ops/cases/{case_id}/publish")
+    async def ops_publish_case(
+        case_id: str, _: None = Depends(_auth_dependency)
+    ) -> dict[str, Any]:
+        try:
+            return await publish_problem_case(case_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/ops/cases/{case_id}/close")
+    async def ops_close_case(
+        case_id: str,
+        body: CloseProblemCaseRequest,
+        _: None = Depends(_auth_dependency),
+    ) -> dict[str, Any]:
+        try:
+            return await close_problem_case(
+                case_id, assignee=body.assignee, note=body.note
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/ops/cases/{case_id}/sync-ticket")
+    async def ops_sync_case_ticket(
+        case_id: str, _: None = Depends(_auth_dependency)
+    ) -> dict[str, Any]:
+        try:
+            return await sync_problem_case_ticket(case_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.post("/api/inspection/run")
     async def run_inspection(_: None = Depends(_auth_dependency)) -> dict[str, Any]:

@@ -138,6 +138,17 @@ class IncidentStore:
         incident.updated_at = datetime.utcnow()
         await self._upsert(incident)
 
+    async def update_status(
+        self, incident_id: str, status: IncidentStatus
+    ) -> Incident | None:
+        incident = await self.get_incident(incident_id)
+        if not incident:
+            return None
+        incident.status = status
+        incident.updated_at = datetime.utcnow()
+        await self._upsert(incident)
+        return incident
+
     async def record_restart(self, service_id: str) -> None:
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(

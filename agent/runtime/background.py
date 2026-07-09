@@ -15,6 +15,7 @@ from agent.remediation.orchestrator import ActionOrchestrator
 from agent.remediation.write_orchestrator import WriteOrchestrator
 from agent.settings import get_settings
 from agent.store.incidents import IncidentStore
+from agent.ops.auto_draft import handle_incident_alert
 
 logger = logging.getLogger(__name__)
 
@@ -80,7 +81,7 @@ class BackgroundRuntime:
         await self.incident_store.init()
 
         async def on_alert(incident):
-            await self.feishu.send_incident_card(incident)
+            await handle_incident_alert(incident, self.feishu)
 
         self.monitor = MonitorLoop(on_alert=on_alert, incident_store=self.incident_store)
         await self.monitor.start()
@@ -91,6 +92,9 @@ class BackgroundRuntime:
 
         await get_chat_store().init()
         await get_knowledge_store().init()
+        from agent.services.ops_case_ops import init_problem_cases
+
+        await init_problem_cases()
         await get_checkpointer()
         await self.chat_agent._ensure_checkpointer()
 

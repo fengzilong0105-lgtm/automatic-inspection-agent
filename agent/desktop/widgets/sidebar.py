@@ -9,6 +9,7 @@ from agent.desktop.assets import load_logo_pixmap
 NAV_ITEMS: list[tuple[str, str]] = [
     ("home", "概览"),
     ("incidents", "告警"),
+    ("cases", "问题报告"),
     ("settings", "设置"),
 ]
 

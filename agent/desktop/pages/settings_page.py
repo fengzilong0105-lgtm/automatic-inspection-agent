@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -21,16 +21,19 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from agent.config_mgr.setup import FeishuBotSetupPayload, FeishuSetupPayload, LLMSetupPayload
+from agent.config_mgr.setup import FeishuBotSetupPayload, FeishuSetupPayload, LLMSetupPayload, OpsReportFeishuSetupPayload, OpsReportSetupPayload
 from agent.desktop.async_call import AsyncCall
 from agent.desktop.constants import UNCHANGED
 from agent.desktop.widgets.card import Card
 from agent.desktop.widgets.form_rows import labeled_field_row, style_input
+from agent.desktop.widgets.hosts_panel import HostsPanel
 from agent.desktop.widgets.word_wrap_label import WordWrapLabel
 from agent.services.agent_service import AgentService
 
 
 class SettingsPage(QWidget):
+    hosts_changed = Signal()
+
     def __init__(self, service: AgentService, parent=None) -> None:
         super().__init__(parent)
         self.service = service
@@ -49,6 +52,12 @@ class SettingsPage(QWidget):
         page_layout.setContentsMargins(0, 0, 0, 0)
         page_layout.addWidget(scroll)
         scroll.setWidget(body)
+
+        hosts_card = Card()
+        self.hosts_panel = HostsPanel(service)
+        self.hosts_panel.hosts_changed.connect(self.hosts_changed.emit)
+        hosts_card.content_layout.addWidget(self.hosts_panel)
+        outer.addWidget(hosts_card)
 
         grid = QGridLayout()
         grid.setSpacing(12)
@@ -169,6 +178,54 @@ class SettingsPage(QWidget):
         grid.setRowStretch(0, 1)
         outer.addLayout(grid)
 
+        ops_card = Card()
+        ops_title = QLabel("问题报告 / 飞书归档")
+        ops_title.setObjectName("sectionTitle")
+        ops_hint = WordWrapLabel(
+            "发布报告到飞书文档时使用以下配置。保存后立即生效，无需手动编辑 config.yaml。"
+        )
+        ops_hint.setObjectName("mutedText")
+        self._ops_hint = ops_hint
+
+        self.ops_initiator = QLineEdit()
+        self.ops_archive_folder = QLineEdit()
+        self.ops_archive_folder.setPlaceholderText("fldxxx，留空则创建在应用根目录")
+        self.ops_tenant_subdomain = QLineEdit()
+        self.ops_tenant_subdomain.setPlaceholderText("如 mycompany → https://mycompany.feishu.cn/docx/...")
+        self.ops_notify_chat_id = QLineEdit()
+        self.ops_notify_chat_id.setPlaceholderText("留空则使用上方告警 Chat ID")
+        self.ops_bitable_app_token = QLineEdit()
+        self.ops_bitable_app_token.setPlaceholderText("M3 工单：多维表格 app_token")
+        self.ops_bitable_table_id = QLineEdit()
+        self.ops_bitable_table_id.setPlaceholderText("M3 工单：数据表 table_id")
+        self.ops_auto_draft = QCheckBox("P0/P1 告警自动起草报告（不自动发布）")
+        self.ops_auto_publish = QCheckBox("自动发布到飞书（不推荐，默认需人工确认）")
+        for field in (
+            self.ops_initiator,
+            self.ops_archive_folder,
+            self.ops_tenant_subdomain,
+            self.ops_notify_chat_id,
+            self.ops_bitable_app_token,
+            self.ops_bitable_table_id,
+        ):
+            style_input(field)
+
+        ops_form = QFormLayout()
+        ops_form.setSpacing(8)
+        ops_form.addRow("默认发起人", self.ops_initiator)
+        ops_form.addRow("归档文件夹 Token", self.ops_archive_folder)
+        ops_form.addRow("企业子域名", self.ops_tenant_subdomain)
+        ops_form.addRow("发布通知群 Chat ID", self.ops_notify_chat_id)
+        ops_form.addRow("Bitable App Token", self.ops_bitable_app_token)
+        ops_form.addRow("Bitable Table ID", self.ops_bitable_table_id)
+
+        ops_card.content_layout.addWidget(ops_title)
+        ops_card.content_layout.addWidget(ops_hint)
+        ops_card.content_layout.addLayout(ops_form)
+        ops_card.content_layout.addWidget(self.ops_auto_draft)
+        ops_card.content_layout.addWidget(self.ops_auto_publish)
+        outer.addWidget(ops_card)
+
         memory_card = Card()
         memory_title = QLabel("AI 记忆")
         memory_title.setObjectName("sectionTitle")
@@ -227,13 +284,18 @@ class SettingsPage(QWidget):
         self.load_form()
         self.load_memory()
 
+    def reload_hosts(self) -> None:
+        self.hosts_panel.reload()
+
     def showEvent(self, event) -> None:
         super().showEvent(event)
         self._bot_hint._sync_height()
+        self._ops_hint._sync_height()
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
         self._bot_hint._sync_height()
+        self._ops_hint._sync_height()
 
     def load_form(self) -> None:
         data = self.service.setup_form()
@@ -254,6 +316,18 @@ class SettingsPage(QWidget):
         self.bot_require_at_mention.setChecked(
             bot.get("require_at_mention", True) if bot else True
         )
+
+        ops_report = data.get("ops_report") or {}
+        ops_feishu = ops_report.get("feishu") or {}
+        self.ops_initiator.setText(ops_report.get("initiator_default", "运维值班"))
+        self.ops_archive_folder.setText(ops_feishu.get("archive_folder_token", ""))
+        self.ops_tenant_subdomain.setText(ops_feishu.get("tenant_subdomain", ""))
+        self.ops_notify_chat_id.setText(ops_feishu.get("notify_chat_id", ""))
+        self.ops_bitable_app_token.setText(ops_feishu.get("bitable_app_token", ""))
+        self.ops_bitable_table_id.setText(ops_feishu.get("bitable_table_id", ""))
+        self.ops_auto_draft.setChecked(bool(ops_report.get("auto_draft_on_incident")))
+        self.ops_auto_publish.setChecked(bool(ops_report.get("auto_publish")))
+
         try:
             memory_settings = self.service.get_memory_settings()
             self.auto_extract.blockSignals(True)
@@ -341,10 +415,28 @@ class SettingsPage(QWidget):
             ),
         )
 
+    def _ops_report_payload(self) -> OpsReportSetupPayload:
+        return OpsReportSetupPayload(
+            auto_draft_on_incident=self.ops_auto_draft.isChecked(),
+            auto_publish=self.ops_auto_publish.isChecked(),
+            initiator_default=self.ops_initiator.text().strip() or "运维值班",
+            feishu=OpsReportFeishuSetupPayload(
+                archive_folder_token=self.ops_archive_folder.text().strip(),
+                tenant_subdomain=self.ops_tenant_subdomain.text().strip(),
+                bitable_app_token=self.ops_bitable_app_token.text().strip(),
+                bitable_table_id=self.ops_bitable_table_id.text().strip(),
+                notify_chat_id=self.ops_notify_chat_id.text().strip(),
+            ),
+        )
+
     def save_settings(self) -> None:
         self.result.setPlainText("保存中…")
         self._bridge.submit(
-            self.service.save_llm_feishu_async(self._llm_payload(), self._feishu_payload())
+            self.service.save_llm_feishu_async(
+                self._llm_payload(),
+                self._feishu_payload(),
+                self._ops_report_payload(),
+            )
         )
 
     def test_llm(self) -> None:

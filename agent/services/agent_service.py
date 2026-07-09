@@ -16,6 +16,7 @@ from agent.config_mgr.setup import (
     HostSetupPayload,
     InlineSSHTestPayload,
     LLMSetupPayload,
+    OpsReportSetupPayload,
     SetupSavePayload,
     SSHSetupPayload,
     apply_setup_payload,
@@ -49,6 +50,15 @@ from agent.services.chat_ops import (
     run_chat_stream,
     save_chat_memory_settings,
     update_knowledge_entry,
+)
+from agent.services.ops_case_ops import (
+    close_problem_case,
+    create_problem_case_from_incident,
+    get_problem_case,
+    list_problem_cases,
+    publish_problem_case,
+    sync_problem_case_ticket,
+    update_problem_case,
 )
 from agent.store.incidents import IncidentStore
 
@@ -117,6 +127,8 @@ class AgentService:
     def upsert_host_config(self, body: HostSetupPayload, host_id: str | None = None) -> dict[str, Any]:
         settings = get_settings()
         existing = settings.get_host(host_id) if host_id else None
+        if not host_id and any(h.id == body.id for h in settings.config.hosts):
+            raise ValueError(f"主机 ID 已存在: {body.id}")
         if host_id and body.id != host_id and any(h.id == body.id for h in settings.config.hosts):
             raise ValueError(f"主机 ID 已存在: {body.id}")
         host = build_host_config(body, existing)
@@ -145,16 +157,29 @@ class AgentService:
         delete_host(host_id)
         return {"deleted": host_id}
 
-    def save_llm_feishu(self, llm: LLMSetupPayload, feishu: FeishuSetupPayload | None) -> None:
-        apply_llm_feishu_payload(llm, feishu)
+    def save_llm_feishu(
+        self,
+        llm: LLMSetupPayload,
+        feishu: FeishuSetupPayload | None,
+        ops_report: OpsReportSetupPayload | None = None,
+    ) -> None:
+        apply_llm_feishu_payload(llm, feishu, ops_report)
 
-    def save_llm_feishu_async(self, llm: LLMSetupPayload, feishu: FeishuSetupPayload | None):
-        return self._run(self._save_llm_feishu_async(llm, feishu))
+    def save_llm_feishu_async(
+        self,
+        llm: LLMSetupPayload,
+        feishu: FeishuSetupPayload | None,
+        ops_report: OpsReportSetupPayload | None = None,
+    ):
+        return self._run(self._save_llm_feishu_async(llm, feishu, ops_report))
 
     async def _save_llm_feishu_async(
-        self, llm: LLMSetupPayload, feishu: FeishuSetupPayload | None
+        self,
+        llm: LLMSetupPayload,
+        feishu: FeishuSetupPayload | None,
+        ops_report: OpsReportSetupPayload | None = None,
     ) -> str:
-        await asyncio.to_thread(apply_llm_feishu_payload, llm, feishu)
+        await asyncio.to_thread(apply_llm_feishu_payload, llm, feishu, ops_report)
         return "设置已保存"
 
     # --- discovery / services ---
@@ -416,6 +441,48 @@ class AgentService:
             raise RuntimeError("Monitor is not running")
         incidents = await monitor.run_once()
         return {"created": len(incidents), "incidents": [i.model_dump() for i in incidents]}
+
+    # --- ops problem cases ---
+
+    def list_problem_cases(self, limit: int = 100) -> Any:
+        return self._run(list_problem_cases(limit=limit))
+
+    def get_problem_case(self, case_id: str) -> Any:
+        return self._run(get_problem_case(case_id))
+
+    def create_problem_case_from_incident(
+        self, incident_id: str, *, initiator: str | None = None
+    ) -> Any:
+        return self._run(
+            create_problem_case_from_incident(incident_id, initiator=initiator)
+        )
+
+    def update_problem_case(self, case_id: str, payload: dict[str, Any]) -> Any:
+        return self._run(update_problem_case(case_id, payload))
+
+    def publish_problem_case(
+        self, case_id: str, payload: dict[str, Any] | None = None
+    ) -> Any:
+        return self._run(self._publish_problem_case(case_id, payload))
+
+    async def _publish_problem_case(
+        self, case_id: str, payload: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        if payload:
+            await update_problem_case(case_id, payload)
+        return await publish_problem_case(case_id)
+
+    def close_problem_case(
+        self,
+        case_id: str,
+        *,
+        assignee: str | None = None,
+        note: str | None = None,
+    ) -> Any:
+        return self._run(close_problem_case(case_id, assignee=assignee, note=note))
+
+    def sync_problem_case_ticket(self, case_id: str) -> Any:
+        return self._run(sync_problem_case_ticket(case_id))
 
     # --- chat ---
 

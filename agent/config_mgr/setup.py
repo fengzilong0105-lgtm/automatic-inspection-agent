@@ -5,7 +5,15 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from agent.config_mgr.hosts import build_host_config
-from agent.models import FeishuBotConfig, FeishuConfig, HostConfig, LLMDefaultConfig, SSHConfig
+from agent.models import (
+    FeishuBotConfig,
+    FeishuConfig,
+    HostConfig,
+    LLMDefaultConfig,
+    OpsReportConfig,
+    OpsReportFeishuConfig,
+    SSHConfig,
+)
 from agent.settings import UNCHANGED_SECRET, get_settings
 
 
@@ -47,6 +55,21 @@ class FeishuSetupPayload(BaseModel):
     app_secret: str | None = None
     alert_chat_id: str = ""
     bot: FeishuBotSetupPayload = Field(default_factory=FeishuBotSetupPayload)
+
+
+class OpsReportFeishuSetupPayload(BaseModel):
+    archive_folder_token: str = ""
+    tenant_subdomain: str = ""
+    bitable_app_token: str = ""
+    bitable_table_id: str = ""
+    notify_chat_id: str = ""
+
+
+class OpsReportSetupPayload(BaseModel):
+    auto_draft_on_incident: bool = False
+    auto_publish: bool = False
+    initiator_default: str = "运维值班"
+    feishu: OpsReportFeishuSetupPayload = Field(default_factory=OpsReportFeishuSetupPayload)
 
 
 class SetupSavePayload(BaseModel):
@@ -138,8 +161,12 @@ def apply_setup_payload(payload: SetupSavePayload) -> None:
         schedule_feishu_bot_restart()
 
 
-def apply_llm_feishu_payload(llm: LLMSetupPayload, feishu: FeishuSetupPayload | None) -> None:
-    """Update LLM / Feishu settings without touching SSH connections."""
+def apply_llm_feishu_payload(
+    llm: LLMSetupPayload,
+    feishu: FeishuSetupPayload | None,
+    ops_report: OpsReportSetupPayload | None = None,
+) -> None:
+    """Update LLM / Feishu / ops report settings without touching SSH connections."""
     settings = get_settings()
     config = settings.config
 
@@ -181,7 +208,28 @@ def apply_llm_feishu_payload(llm: LLMSetupPayload, feishu: FeishuSetupPayload | 
             ),
         )
 
-    updated = config.model_copy(update={"llm": llm_config, "feishu": feishu_config})
+    ops_report_config = config.ops_report
+    if ops_report:
+        ops_report_config = OpsReportConfig(
+            auto_draft_on_incident=ops_report.auto_draft_on_incident,
+            auto_publish=ops_report.auto_publish,
+            initiator_default=ops_report.initiator_default.strip() or "运维值班",
+            feishu=OpsReportFeishuConfig(
+                archive_folder_token=ops_report.feishu.archive_folder_token.strip(),
+                tenant_subdomain=ops_report.feishu.tenant_subdomain.strip(),
+                bitable_app_token=ops_report.feishu.bitable_app_token.strip(),
+                bitable_table_id=ops_report.feishu.bitable_table_id.strip(),
+                notify_chat_id=ops_report.feishu.notify_chat_id.strip(),
+            ),
+        )
+
+    updated = config.model_copy(
+        update={
+            "llm": llm_config,
+            "feishu": feishu_config,
+            "ops_report": ops_report_config,
+        }
+    )
     settings.save(updated)
 
     if feishu is not None:

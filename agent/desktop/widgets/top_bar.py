@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from PySide6.QtWidgets import QComboBox, QHBoxLayout, QLabel, QPushButton, QWidget
 
-PAGE_TITLES = ["首页", "告警", "设置"]
+PAGE_TITLES = ["首页", "告警", "问题报告", "设置"]
 
 
 class TopBar(QWidget):
@@ -32,6 +32,7 @@ class TopBar(QWidget):
         self.scan_btn.setObjectName("secondaryButton")
         self.wizard_btn = QPushButton("初始化向导")
         self.wizard_btn.setObjectName("secondaryButton")
+        self.wizard_btn.setVisible(False)
 
         layout.addWidget(host_label)
         layout.addWidget(self.host_combo)
@@ -42,3 +43,6 @@ class TopBar(QWidget):
     def set_page_index(self, index: int) -> None:
         if 0 <= index < len(PAGE_TITLES):
             self.page_title.setText(PAGE_TITLES[index])
+
+    def set_setup_needed(self, needed: bool) -> None:
+        self.wizard_btn.setVisible(needed)

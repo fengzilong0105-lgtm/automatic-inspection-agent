@@ -20,6 +20,7 @@ function dashboard() {
     memoryDraft: { category: "service_fact", key: "", value: "" },
     sessionId: "",
     showSettings: false,
+    setupCompleted: false,
     settingsForm: {
       llm: { provider: "openai", base_url: "", model: "", api_key: "", ollama_base_url: "http://localhost:11434", api_key_masked: null },
       feishu: {
@@ -436,6 +437,12 @@ function dashboard() {
     },
 
     async init() {
+      try {
+        const status = await this.api("/api/setup/status");
+        this.setupCompleted = !!status.setup_completed;
+      } catch (_) {
+        this.setupCompleted = false;
+      }
       await this.refresh({ skipSummary: true });
       this.refreshSummaryInBackground(this.activeHost);
       await this.loadSettingsForm();

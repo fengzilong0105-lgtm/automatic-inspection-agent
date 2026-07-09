@@ -184,6 +184,18 @@ class Settings:
                 "port": self._config.web.port,
                 "auth_token_set": bool(self._config.web.auth_token),
             },
+            "ops_report": {
+                "auto_draft_on_incident": self._config.ops_report.auto_draft_on_incident,
+                "auto_publish": self._config.ops_report.auto_publish,
+                "initiator_default": self._config.ops_report.initiator_default,
+                "feishu": {
+                    "archive_folder_token": self._config.ops_report.feishu.archive_folder_token,
+                    "tenant_subdomain": self._config.ops_report.feishu.tenant_subdomain,
+                    "bitable_app_token": self._config.ops_report.feishu.bitable_app_token,
+                    "bitable_table_id": self._config.ops_report.feishu.bitable_table_id,
+                    "notify_chat_id": self._config.ops_report.feishu.notify_chat_id,
+                },
+            },
         }
 
 

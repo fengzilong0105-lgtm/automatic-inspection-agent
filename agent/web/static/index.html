@@ -24,7 +24,7 @@
         <span class="tip-wrap" data-tip="通过 SSH 扫描所选 Linux 主机上的 Java、Docker、Compose、中间件，将高置信度结果注册为可监控服务。">
           <button @click="scanHost()" :disabled="isBusy()">扫描服务</button>
         </span>
-        <span class="tip-wrap" data-tip="打开初始化向导，配置 SSH 连接、大模型、飞书告警，并扫描注册服务。">
+        <span class="tip-wrap" data-tip="打开初始化向导，配置 SSH 连接、大模型、飞书告警，并扫描注册服务。" x-show="!setupCompleted">
           <button type="button" class="secondary" @click="goSetup()">初始化向导</button>
         </span>
         <span class="tip-wrap" data-tip="管理多台主机、大模型、飞书等系统配置，支持连接测试。">
@@ -225,7 +225,7 @@
           </template>
           <p class="muted" x-show="!hosts.length">暂无主机，请添加第一台 Linux 服务器。</p>
         </div>
-        <button type="button" class="secondary" @click="startAddHost()" x-show="!hostEditor">+ 添加主机</button>
+        <button type="button" class="secondary" @click="startAddHost()" x-show="!hostEditor">+ 新建服务器</button>
 
         <template x-if="hostEditor">
           <div class="host-editor panel-inner">

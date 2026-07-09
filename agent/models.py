@@ -148,6 +148,21 @@ class ChatConfig(BaseModel):
     policy: ChatPolicyConfig = Field(default_factory=ChatPolicyConfig)
 
 
+class OpsReportFeishuConfig(BaseModel):
+    archive_folder_token: str = ""
+    tenant_subdomain: str = ""
+    bitable_app_token: str = ""
+    bitable_table_id: str = ""
+    notify_chat_id: str = ""
+
+
+class OpsReportConfig(BaseModel):
+    auto_draft_on_incident: bool = False
+    auto_publish: bool = False
+    initiator_default: str = "运维值班"
+    feishu: OpsReportFeishuConfig = Field(default_factory=OpsReportFeishuConfig)
+
+
 class AppConfig(BaseModel):
     mode: Literal["remote", "local-linux", "local-windows"] = "remote"
     setup_completed: bool = False
@@ -162,6 +177,7 @@ class AppConfig(BaseModel):
     web: WebConfig = Field(default_factory=WebConfig)
     autonomy: AutonomyConfig = Field(default_factory=AutonomyConfig)
     chat: ChatConfig = Field(default_factory=ChatConfig)
+    ops_report: OpsReportConfig = Field(default_factory=OpsReportConfig)
     data_dir: str = "./data"
 
 

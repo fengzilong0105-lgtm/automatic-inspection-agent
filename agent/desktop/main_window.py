@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
 )
 
 from agent.desktop.assets import load_app_icon
+from agent.desktop.pages.cases_page import CasesPage
 from agent.desktop.pages.home_page import HomePage
 from agent.desktop.pages.incidents_page import IncidentsPage
 from agent.desktop.pages.settings_page import SettingsPage
@@ -63,13 +64,17 @@ class MainWindow(QMainWindow):
         self.stack.setObjectName("pageHost")
         self.home_page = HomePage(service)
         self.incidents_page = IncidentsPage(service)
+        self.cases_page = CasesPage(service)
         self.settings_page = SettingsPage(service)
         self.stack.addWidget(self.home_page)
         self.stack.addWidget(self.incidents_page)
+        self.stack.addWidget(self.cases_page)
         self.stack.addWidget(self.settings_page)
 
         self.home_page.go_incidents.connect(lambda: self._on_page_changed(1))
         self.home_page.chat_panel.memory_updated.connect(self.settings_page.load_memory)
+        self.incidents_page.case_created.connect(self._on_case_created)
+        self.settings_page.hosts_changed.connect(self.reload_hosts)
 
         self.sidebar.page_changed.connect(self._on_page_changed)
 
@@ -84,6 +89,11 @@ class MainWindow(QMainWindow):
         self.setStatusBar(self.status)
 
         self.reload_hosts()
+        self._update_setup_ui()
+
+    def _update_setup_ui(self) -> None:
+        status = self.service.setup_status()
+        self.top_bar.set_setup_needed(bool(status.get("setup_needed")))
 
     def _on_page_changed(self, index: int) -> None:
         self.stack.setCurrentIndex(index)
@@ -94,7 +104,15 @@ class MainWindow(QMainWindow):
         if index == 1:
             self.incidents_page.refresh()
         elif index == 2:
+            self.cases_page.refresh()
+        elif index == 3:
             self.settings_page.load_memory()
+            self.settings_page.reload_hosts()
+
+    def _on_case_created(self, case_id: str) -> None:
+        self._on_page_changed(2)
+        self.cases_page.open_case(case_id)
+        self.status.showMessage(f"问题报告已生成：{case_id[:8]}…", 5000)
 
     def _run_inspection(self) -> None:
         self._on_page_changed(0)
@@ -137,7 +155,9 @@ class MainWindow(QMainWindow):
         wizard = SetupWizard(self.service, self)
         if wizard.exec():
             self.reload_hosts()
+            self._update_setup_ui()
             self.settings_page.load_form()
+            self.settings_page.reload_hosts()
             self.incidents_page.refresh()
 
     def show_from_tray(self) -> None:
