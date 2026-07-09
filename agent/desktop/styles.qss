@@ -53,6 +53,33 @@ QLabel#mutedText {
     font-size: 12px;
 }
 
+QLabel#actionHelpHint {
+    color: #8C8C8C;
+    font-size: 9px;
+    font-weight: 700;
+    background-color: #FFFFFF;
+    border: 1px solid #E8E8E8;
+    border-radius: 7px;
+}
+
+QLabel#actionHelpHint:hover {
+    color: #1890FF;
+    border-color: #91D5FF;
+    background-color: #E6F4FF;
+}
+
+QLabel#actionHelpHint[hintVariant="primary"] {
+    color: #1890FF;
+    background-color: rgba(255, 255, 255, 0.95);
+    border-color: rgba(255, 255, 255, 0.85);
+}
+
+QLabel#actionHelpHint[hintVariant="primary"]:hover {
+    color: #096DD9;
+    background-color: #FFFFFF;
+    border-color: #91D5FF;
+}
+
 QPushButton#navButton {
     background: transparent;
     border: none;

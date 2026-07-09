@@ -104,7 +104,7 @@ class MainWindow(QMainWindow):
         if index == 1:
             self.incidents_page.refresh()
         elif index == 2:
-            self.cases_page.refresh()
+            self.cases_page.on_page_shown()
         elif index == 3:
             self.settings_page.load_memory()
             self.settings_page.reload_hosts()
