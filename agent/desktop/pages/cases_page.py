@@ -274,6 +274,8 @@ class CasesPage(QWidget):
     def _apply_action_state(self, case: dict) -> None:
         closed = is_case_closed(case)
         has_ticket = bool(case.get("feishu_bitable_record_id"))
+        has_doc = bool(self._current_doc_url)
+        self.publish_btn.setText("更新飞书" if has_doc else "发布到飞书")
         self.save_btn.setEnabled(not closed)
         self.publish_btn.setEnabled(not closed)
         self.close_btn.setEnabled(not closed)
@@ -308,16 +310,26 @@ class CasesPage(QWidget):
         if is_case_closed(self._current_case):
             self.editor_status.setText("案例已关闭，无法再次发布")
             return
+        has_doc = bool(self._current_doc_url)
+        if has_doc:
+            prompt = (
+                "将用当前报告内容覆盖更新已有飞书文档，并同步 Bitable 工单字段。"
+                "文档链接不变，确认继续？"
+            )
+            title = "更新飞书"
+        else:
+            prompt = "将创建飞书文档、写入 Bitable 工单并发送群通知，确认继续？"
+            title = "发布到飞书"
         answer = QMessageBox.question(
             self,
-            "发布到飞书",
-            "将创建飞书文档、写入 Bitable 工单并发送群通知，确认继续？",
+            title,
+            prompt,
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
         if answer != QMessageBox.StandardButton.Yes:
             return
-        self.editor_status.setText("正在保存并发布到飞书…")
+        self.editor_status.setText("正在保存并更新飞书…" if has_doc else "正在保存并发布到飞书…")
         self.publish_btn.setEnabled(False)
         payload = {
             "title": self.title_input.text().strip(),
@@ -338,7 +350,8 @@ class CasesPage(QWidget):
         doc_url = case.get("feishu_doc_url") or ""
         record_id = case.get("feishu_bitable_record_id") or ""
         if doc_url or record_id:
-            lines = ["发布完成："]
+            action = "更新完成" if self._current_doc_url and doc_url == self._current_doc_url else "发布完成"
+            lines = [f"{action}："]
             if doc_url:
                 lines.append(f"文档: {doc_url}")
             if record_id:

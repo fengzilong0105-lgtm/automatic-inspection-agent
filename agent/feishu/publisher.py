@@ -1,14 +1,17 @@
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 
 from agent.brand import PRODUCT_NAME
-from agent.feishu.bitable_client import FeishuBitableClient
+from agent.feishu.bitable_client import FeishuBitableClient, build_ticket_fields
 from agent.feishu.client import FeishuAPIError, send_feishu_text
 from agent.feishu.doc_client import FeishuDocClient
 from agent.ops.models import ProblemCase, ProblemCaseStatus
 from agent.ops.ticket_sync import TICKET_STATUS_PENDING
 from agent.settings import get_settings
+
+logger = logging.getLogger(__name__)
 
 
 class CasePublishError(RuntimeError):
@@ -35,10 +38,7 @@ def _resolve_notify_chat_id() -> str:
     return (ops_feishu.notify_chat_id or settings.config.feishu.alert_chat_id or "").strip()
 
 
-async def _ensure_feishu_document(case: ProblemCase) -> ProblemCase:
-    if case.feishu_doc_token and case.feishu_doc_url:
-        return case
-
+async def _sync_feishu_document(case: ProblemCase) -> ProblemCase:
     settings = get_settings()
     feishu_cfg = settings.config.feishu
     ops_feishu = settings.config.ops_report.feishu
@@ -48,12 +48,17 @@ async def _ensure_feishu_document(case: ProblemCase) -> ProblemCase:
         app_secret=feishu_cfg.app_secret,
         tenant_subdomain=ops_feishu.tenant_subdomain,
     )
+    now = datetime.utcnow()
+
+    if case.feishu_doc_token:
+        await client.replace_markdown(case.feishu_doc_token, case.report_markdown)
+        return case.model_copy(update={"updated_at": now})
+
     created = await client.create_document_with_markdown(
         case.title.strip(),
         case.report_markdown,
         folder_token=ops_feishu.archive_folder_token,
     )
-    now = datetime.utcnow()
     return case.model_copy(
         update={
             "feishu_doc_token": created["document_id"],
@@ -65,9 +70,14 @@ async def _ensure_feishu_document(case: ProblemCase) -> ProblemCase:
     )
 
 
-async def _create_bitable_ticket(case: ProblemCase) -> ProblemCase:
-    if case.feishu_bitable_record_id:
-        return case
+async def _ensure_feishu_document(case: ProblemCase) -> ProblemCase:
+    """Backward-compatible alias: create if missing, otherwise replace content."""
+    return await _sync_feishu_document(case)
+
+
+async def _sync_bitable_ticket(case: ProblemCase) -> ProblemCase:
+    if not case.feishu_doc_url:
+        raise CasePublishError("飞书文档链接缺失，无法同步工单")
 
     settings = get_settings()
     feishu_cfg = settings.config.feishu
@@ -76,20 +86,29 @@ async def _create_bitable_ticket(case: ProblemCase) -> ProblemCase:
         raise CasePublishError(
             "Bitable 未配置，请在设置中填写 Bitable App Token 与 Table ID"
         )
-    if not case.feishu_doc_url:
-        raise CasePublishError("飞书文档链接缺失，无法创建工单")
 
     client = FeishuBitableClient(
         app_id=feishu_cfg.app_id,
         app_secret=feishu_cfg.app_secret,
     )
+    fields = build_ticket_fields(case, doc_url=case.feishu_doc_url)
+    now = datetime.utcnow()
+
+    if case.feishu_bitable_record_id:
+        await client.update_record(
+            ops_feishu.bitable_app_token,
+            ops_feishu.bitable_table_id,
+            case.feishu_bitable_record_id,
+            fields,
+        )
+        return case.model_copy(update={"updated_at": now})
+
     record_id = await client.create_ticket_record(
         case,
         app_token=ops_feishu.bitable_app_token,
         table_id=ops_feishu.bitable_table_id,
         doc_url=case.feishu_doc_url,
     )
-    now = datetime.utcnow()
     return case.model_copy(
         update={
             "feishu_bitable_record_id": record_id,
@@ -100,7 +119,11 @@ async def _create_bitable_ticket(case: ProblemCase) -> ProblemCase:
     )
 
 
-async def _send_publish_notification(case: ProblemCase) -> None:
+async def _create_bitable_ticket(case: ProblemCase) -> ProblemCase:
+    return await _sync_bitable_ticket(case)
+
+
+async def _send_publish_notification(case: ProblemCase, *, updated: bool = False) -> None:
     chat_id = _resolve_notify_chat_id()
     if not chat_id:
         return
@@ -111,8 +134,9 @@ async def _send_publish_notification(case: ProblemCase) -> None:
     if case.feishu_bitable_record_id:
         record_hint = f"\n工单记录 ID: {case.feishu_bitable_record_id}"
 
+    action = "问题报告已更新" if updated else "问题报告已发布"
     text = (
-        f"【{PRODUCT_NAME} 问题报告已发布】\n"
+        f"【{PRODUCT_NAME} {action}】\n"
         f"问题: {case.title}\n"
         f"级别: {case.severity} | 服务: {case.service_id} | 主机: {case.host_id}\n"
         f"发起人: {case.initiator}\n"
@@ -129,21 +153,18 @@ async def _send_publish_notification(case: ProblemCase) -> None:
 
 
 async def publish_case(case: ProblemCase) -> ProblemCase:
-    """M3: Feishu doc + Bitable ticket row + group notification."""
+    """Feishu doc + Bitable ticket row + group notification. Re-publish updates existing doc/row."""
     _validate_publish_ready(case)
 
-    if (
-        case.status == ProblemCaseStatus.TICKET_CREATED
-        and case.feishu_bitable_record_id
-        and case.feishu_doc_url
-    ):
-        return case
+    already_published = bool(case.feishu_doc_token and case.feishu_doc_url)
 
     try:
-        updated = case
-        updated = await _ensure_feishu_document(updated)
-        updated = await _create_bitable_ticket(updated)
-        await _send_publish_notification(updated)
+        updated = await _sync_feishu_document(case)
+        updated = await _sync_bitable_ticket(updated)
+        try:
+            await _send_publish_notification(updated, updated=already_published)
+        except Exception as exc:
+            logger.warning("发布通知发送失败（飞书内容已同步）: %s", exc)
     except FeishuAPIError as exc:
         raise CasePublishError(str(exc)) from exc
 

@@ -18,9 +18,9 @@ def _format_status(status) -> str:
     return " | ".join(part for part in parts if part)
 
 
-def _build_chat_excerpt(messages: list, *, max_chars: int = 8000) -> str:
+def _build_chat_excerpt(messages: list, *, max_chars: int = 32000) -> str:
     lines: list[str] = []
-    for message in messages[-30:]:
+    for message in messages[-40:]:
         role = getattr(message, "role", message.get("role") if isinstance(message, dict) else "unknown")
         content = getattr(message, "content", None)
         if content is None and isinstance(message, dict):
@@ -34,7 +34,8 @@ def _build_chat_excerpt(messages: list, *, max_chars: int = 8000) -> str:
         prefix = f"[{role}]"
         if tool_name:
             prefix = f"[{role}/{tool_name}]"
-        lines.append(f"{prefix} {text[:2000]}")
+        per_message_limit = 12000 if role == "assistant" else 2000
+        lines.append(f"{prefix} {text[:per_message_limit]}")
     excerpt = "\n".join(lines)
     return excerpt[:max_chars]
 

@@ -175,6 +175,53 @@ class FeishuDocClient:
         blocks = markdown_to_blocks(markdown)
         await self.append_blocks(document_id, blocks)
 
+    async def list_block_children(
+        self,
+        document_id: str,
+        block_id: str,
+    ) -> list[str]:
+        child_ids: list[str] = []
+        page_token = ""
+        while True:
+            params: dict[str, Any] = {"page_size": 500}
+            if page_token:
+                params["page_token"] = page_token
+            data = await feishu_api_request(
+                "GET",
+                f"/docx/v1/documents/{document_id}/blocks/{block_id}/children",
+                app_id=self.app_id,
+                app_secret=self.app_secret,
+                params=params,
+            )
+            items = data.get("items") or []
+            for item in items:
+                block_id_value = item.get("block_id")
+                if block_id_value:
+                    child_ids.append(str(block_id_value))
+            page_token = data.get("page_token") or ""
+            if not page_token:
+                break
+        return child_ids
+
+    async def clear_block_children(self, document_id: str, block_id: str) -> None:
+        while True:
+            child_ids = await self.list_block_children(document_id, block_id)
+            if not child_ids:
+                return
+            end_index = min(_BLOCK_BATCH_SIZE, len(child_ids))
+            await feishu_api_request(
+                "DELETE",
+                f"/docx/v1/documents/{document_id}/blocks/{block_id}/children/batch_delete",
+                app_id=self.app_id,
+                app_secret=self.app_secret,
+                params={"document_revision_id": -1},
+                json_body={"start_index": 0, "end_index": end_index},
+            )
+
+    async def replace_markdown(self, document_id: str, markdown: str) -> None:
+        await self.clear_block_children(document_id, document_id)
+        await self.write_markdown(document_id, markdown)
+
     async def create_document_with_markdown(
         self,
         title: str,

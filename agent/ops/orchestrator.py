@@ -8,7 +8,7 @@ from agent.ops.case_store import CaseStore, get_case_store
 from agent.ops.evidence_collector import collect_from_chat, collect_from_incident, collect_from_service
 from agent.models import IncidentStatus
 from agent.ops.models import ProblemCase, ProblemCaseSource, ProblemCaseStatus
-from agent.ops.report_composer import apply_case_edits, compose_problem_case
+from agent.ops.report_composer import apply_case_edits, case_needs_content_refresh, compose_problem_case
 from agent.ops.ticket_sync import (
     TICKET_STATUS_CLOSED,
     TICKET_STATUS_IN_PROGRESS,
@@ -17,9 +17,9 @@ from agent.ops.ticket_sync import (
 )
 from agent.feishu.publisher import (
     CasePublishError,
-    _create_bitable_ticket,
-    _ensure_feishu_document,
     _send_publish_notification,
+    _sync_bitable_ticket,
+    _sync_feishu_document,
 )
 from agent.store.incidents import IncidentStore
 
@@ -87,12 +87,14 @@ class CaseOrchestrator:
         *,
         hint: str | None = None,
         initiator: str | None = None,
+        regenerate: bool = False,
+        draft_override: dict[str, Any] | None = None,
     ) -> ProblemCase:
         await self.init()
         existing = await self.case_store.find_open_by_source(
             ProblemCaseSource.CHAT.value, conversation_id
         )
-        if existing:
+        if existing and not regenerate and not case_needs_content_refresh(existing):
             return existing
 
         evidence = await collect_from_chat(conversation_id, service_id, hint=hint)
@@ -101,7 +103,24 @@ class CaseOrchestrator:
             source=ProblemCaseSource.CHAT,
             source_ref=conversation_id,
             initiator=initiator,
+            draft_override=draft_override,
         )
+        if existing:
+            case = case.model_copy(
+                update={
+                    "id": existing.id,
+                    "created_at": existing.created_at,
+                    "status": existing.status,
+                    "feishu_doc_token": existing.feishu_doc_token,
+                    "feishu_doc_url": existing.feishu_doc_url,
+                    "feishu_bitable_record_id": existing.feishu_bitable_record_id,
+                    "assignee": existing.assignee or case.assignee,
+                    "ticket_status": existing.ticket_status or case.ticket_status,
+                }
+            )
+            await self.case_store.update(case)
+            return case
+
         await self.case_store.create(case)
         return case
 
@@ -154,19 +173,19 @@ class CaseOrchestrator:
     async def publish_case(self, case_id: str) -> ProblemCase:
         await self.init()
         case = await self.get_case(case_id)
+        if case.status == ProblemCaseStatus.CLOSED:
+            raise ValueError("案例已关闭，无法发布或更新飞书文档")
         updated = case
         try:
-            updated = await _ensure_feishu_document(updated)
-            if updated.feishu_doc_token != case.feishu_doc_token:
-                await self.case_store.update(updated)
-
-            updated = await _create_bitable_ticket(updated)
+            updated = await _sync_feishu_document(updated)
+            updated = await _sync_bitable_ticket(updated)
             await self.case_store.update(updated)
 
             try:
-                await _send_publish_notification(updated)
+                already = bool(case.feishu_doc_token and case.feishu_doc_url)
+                await _send_publish_notification(updated, updated=already)
             except Exception as exc:
-                logger.warning("发布通知发送失败（工单已创建）: %s", exc)
+                logger.warning("发布通知发送失败（飞书内容已同步）: %s", exc)
         except CasePublishError as exc:
             if updated.feishu_doc_token != case.feishu_doc_token:
                 await self.case_store.update(updated)

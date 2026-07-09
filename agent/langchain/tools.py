@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from typing import Annotated
+from typing import Annotated, Any
 
 from langchain_core.tools import StructuredTool
 
@@ -604,13 +604,29 @@ def build_readonly_tools() -> list[StructuredTool]:
         incident_id: str | None = None,
         hint: str | None = None,
         conversation_id: str | None = None,
+        title: str | None = None,
+        description: str | None = None,
+        analysis: str | None = None,
+        recommendations: str | None = None,
+        regenerate: bool = False,
     ) -> str:
         """从当前对话、指定服务或告警创建问题报告草稿。
-        生成后不会自动发布，需运维在【问题报告】页确认后发布到飞书。"""
+        生成后不会自动发布，需运维在【问题报告】页确认后发布到飞书。
+        若对话中已有详细分析，请把根因写入 analysis、处置步骤写入 recommendations（可多行，以 - 开头）。"""
         try:
             orchestrator = get_case_orchestrator()
             await orchestrator.init()
             conv_id = (conversation_id or chat_session_id.get() or "").strip()
+            draft_override: dict[str, Any] = {}
+            for key, value in (
+                ("title", title),
+                ("description", description),
+                ("analysis", analysis),
+            ):
+                if value and str(value).strip():
+                    draft_override[key] = str(value).strip()
+            if recommendations and str(recommendations).strip():
+                draft_override["recommendations"] = str(recommendations).strip()
 
             if incident_id:
                 case = await orchestrator.create_from_incident(incident_id)
@@ -618,7 +634,13 @@ def build_readonly_tools() -> list[StructuredTool]:
                 sid = service_id or settings.config.active_service_id
                 if not sid:
                     raise ValueError("请指定 service_id，或在配置中设置 active_service_id")
-                case = await orchestrator.create_from_chat(conv_id, sid, hint=hint)
+                case = await orchestrator.create_from_chat(
+                    conv_id,
+                    sid,
+                    hint=hint,
+                    regenerate=regenerate,
+                    draft_override=draft_override or None,
+                )
             else:
                 sid = service_id or settings.config.active_service_id
                 if not sid:
