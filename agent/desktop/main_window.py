@@ -74,7 +74,7 @@ class MainWindow(QMainWindow):
         self.home_page.go_incidents.connect(lambda: self._on_page_changed(1))
         self.home_page.chat_panel.memory_updated.connect(self.settings_page.load_memory)
         self.incidents_page.case_created.connect(self._on_case_created)
-        self.settings_page.hosts_changed.connect(self.reload_hosts)
+        self.settings_page.hosts_changed.connect(self._on_hosts_changed)
 
         self.sidebar.page_changed.connect(self._on_page_changed)
 
@@ -122,6 +122,12 @@ class MainWindow(QMainWindow):
         self._on_page_changed(0)
         self.home_page.scan_services()
 
+    def _on_hosts_changed(self) -> None:
+        self.reload_hosts()
+        self._update_setup_ui()
+        self.incidents_page.refresh()
+        self.cases_page.refresh()
+
     def reload_hosts(self) -> None:
         data = self.service.list_hosts()
         active = data.get("active_host_id") or ""
@@ -136,6 +142,8 @@ class MainWindow(QMainWindow):
             idx = combo.findData(active)
             if idx >= 0:
                 combo.setCurrentIndex(idx)
+        elif hosts:
+            combo.setCurrentIndex(0)
         combo.blockSignals(False)
         self._on_host_changed()
 
@@ -147,6 +155,7 @@ class MainWindow(QMainWindow):
             self.home_page.set_active_host(host_id, name)
             self.status.showMessage(f"当前主机: {host_id}")
         else:
+            self.home_page.set_active_host("", "")
             self.status.showMessage("未配置主机")
 
     def open_setup_wizard(self) -> None:

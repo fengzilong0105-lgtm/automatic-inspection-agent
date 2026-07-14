@@ -6,7 +6,7 @@ from typing import Any
 
 from agent.config_mgr.hosts import (
     build_host_config,
-    delete_host,
+    delete_host as remove_host_config,
     host_to_safe_dict,
     set_active_host,
     upsert_host,
@@ -124,7 +124,12 @@ class AgentService:
             "active_service_id": settings.config.active_service_id or "",
         }
 
-    def upsert_host_config(self, body: HostSetupPayload, host_id: str | None = None) -> dict[str, Any]:
+    def upsert_host_config(self, body: HostSetupPayload, host_id: str | None = None):
+        return self._run(self._upsert_host_config(body, host_id))
+
+    async def _upsert_host_config(
+        self, body: HostSetupPayload, host_id: str | None = None
+    ) -> dict[str, Any]:
         settings = get_settings()
         existing = settings.get_host(host_id) if host_id else None
         if not host_id and any(h.id == body.id for h in settings.config.hosts):
@@ -153,9 +158,45 @@ class AgentService:
             upsert_host(host, settings)
         return host_to_safe_dict(host)
 
-    def delete_host(self, host_id: str) -> dict[str, Any]:
-        delete_host(host_id)
-        return {"deleted": host_id}
+    def delete_host(self, host_id: str, *, cascade_services: bool = True) -> dict[str, Any]:
+        """Delete a host plus all related local records (services/incidents/cases/runtime)."""
+        result = remove_host_config(host_id, cascade_services=cascade_services)
+        try:
+            side = self._run(
+                self._purge_host_side_effects(
+                    host_id,
+                    list(result.get("removed_services") or []),
+                )
+            ).result(timeout=45)
+            result.update(side)
+        except Exception as exc:
+            result["purge_warning"] = str(exc)
+        return result
+
+    async def _purge_host_side_effects(
+        self, host_id: str, removed_services: list[str]
+    ) -> dict[str, Any]:
+        from agent.ops.case_store import CaseStore
+
+        settings = get_settings()
+        incident_store = self.runtime.incident_store or IncidentStore(settings.data_dir / "agent.db")
+        case_store = CaseStore(settings.data_dir / "agent.db")
+        await incident_store.init()
+        await case_store.init()
+
+        deleted_incidents = await incident_store.delete_by_host(host_id)
+        deleted_restarts = await incident_store.delete_restart_history(removed_services)
+        deleted_cases = await case_store.delete_by_host(host_id)
+
+        if self.runtime.monitor is not None:
+            self.runtime.monitor.forget_services(removed_services)
+        await get_executor_registry().close_host(host_id)
+
+        return {
+            "removed_incidents": deleted_incidents,
+            "removed_restart_history": deleted_restarts,
+            "removed_problem_cases": deleted_cases,
+        }
 
     def save_llm_feishu(
         self,

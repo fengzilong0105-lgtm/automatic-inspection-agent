@@ -98,15 +98,24 @@ class HomePage(QWidget):
         self.stack.setCurrentIndex(1)
 
     def set_active_host(self, host_id: str, host_name: str = "") -> None:
-        self._host_id = host_id
-        self.host_hint.setText(host_name)
+        self._host_id = host_id or ""
+        self.host_hint.setText(host_name or "")
         if self.stack.currentIndex() != 0:
             self.stack.setCurrentIndex(0)
+        if not self._host_id:
+            self.clear_summary("请先选择或新建服务器")
+            return
         self.refresh()
+
+    def clear_summary(self, message: str = "") -> None:
+        self.summary = []
+        self.card_ok.set_value("0")
+        self.card_bad.set_value("0")
+        self.status_label.setText(message or "暂无服务")
 
     def refresh(self) -> None:
         if not self._host_id:
-            self.status_label.setText("请先选择主机")
+            self.clear_summary("请先选择或新建服务器")
             return
         self._mode = "refresh"
         self.status_label.setText("正在检测服务状态…")

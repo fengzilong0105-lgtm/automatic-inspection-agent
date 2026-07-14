@@ -32,6 +32,16 @@ class MonitorLoop:
         self._health_fail_streak: dict[str, int] = {}
         self._recent_alert_keys: set[str] = set()
 
+    def forget_services(self, service_ids: list[str]) -> None:
+        """Drop in-memory monitor state for removed services."""
+        for service_id in service_ids:
+            self._health_fail_streak.pop(service_id, None)
+        prefixes = tuple(f"{sid}:" for sid in service_ids)
+        if prefixes:
+            self._recent_alert_keys = {
+                key for key in self._recent_alert_keys if not key.startswith(prefixes)
+            }
+
     async def start(self) -> None:
         await self.incident_store.init()
         if self._task is None or self._task.done():

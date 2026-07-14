@@ -33,14 +33,27 @@ def _posix_quote(value: str) -> str:
 
 
 def wrap_command_for_host(cmd: str, ssh) -> str:
-    """Wrap remote command with sudo su elevation when configured."""
+    """Wrap remote command with non-interactive root elevation when configured.
+
+    Prefer ``sudo -S -p '' bash -lc`` over ``sudo su -``:
+    - ``-S`` reads password from stdin (no TTY)
+    - ``-p ''`` suppresses the ``[sudo] password:`` prompt noise
+    - ``bash -lc`` avoids ``su -`` re-reading stdin on some distros
+    """
     if not getattr(ssh, "use_sudo_su", False):
         return cmd
     quoted_cmd = _posix_quote(cmd)
     sudo_pwd = getattr(ssh, "sudo_password", None) or getattr(ssh, "password", None)
-    if sudo_pwd:
-        return f"printf '%s\\n' {_posix_quote(sudo_pwd)} | sudo -S su - root -c {quoted_cmd}"
-    return f"sudo su - root -c {quoted_cmd}"
+    if not sudo_pwd:
+        return (
+            f"sudo -n bash -lc {quoted_cmd} "
+            f"|| {{ echo 'STEADYOPS_SUDO_ERROR: 已启用 sudo 提权但未配置密码，"
+            f"请在服务器设置中填写 SSH/sudo 密码' >&2; exit 1; }}"
+        )
+    return (
+        f"printf '%s\\n' {_posix_quote(sudo_pwd)} | "
+        f"sudo -S -p '' bash -lc {quoted_cmd}"
+    )
 
 
 class SSHRemoteExecutor:
@@ -49,6 +62,29 @@ class SSHRemoteExecutor:
         self.host_id = host.id
         self._conn: asyncssh.SSHClientConnection | None = None
         self._run_lock: asyncio.Lock | None = None
+
+    def update_host(self, host: HostConfig) -> None:
+        """Refresh cached SSH config (password / sudo flags) without dropping the pool key."""
+        old = self.host.ssh
+        new = host.ssh
+        self.host = host
+        self.host_id = host.id
+        # 凭据变更时强制重连，避免沿用旧会话
+        if (
+            old.host != new.host
+            or old.port != new.port
+            or old.user != new.user
+            or old.password != new.password
+            or old.key_file != new.key_file
+            or old.use_sudo_su != new.use_sudo_su
+            or old.sudo_password != new.sudo_password
+        ):
+            if self._conn is not None:
+                try:
+                    self._conn.close()
+                except Exception:
+                    pass
+                self._conn = None
 
     async def _get_conn(self) -> asyncssh.SSHClientConnection:
         if self._conn is not None:
@@ -78,15 +114,36 @@ class SSHRemoteExecutor:
         if self._run_lock is None:
             self._run_lock = asyncio.Lock()
         async with self._run_lock:
+            # 每次执行前从 settings 刷新主机配置，避免密码/ sudo 改完仍用旧缓存
+            try:
+                from agent.settings import get_settings
+
+                fresh = get_settings().get_host(self.host_id)
+                self.update_host(fresh)
+            except Exception:
+                pass
+
             conn = await self._get_conn()
             remote_cmd = wrap_command_for_host(cmd, self.host.ssh)
             try:
                 result = await asyncio.wait_for(conn.run(remote_cmd, check=False), timeout=timeout)
-                return CommandResult(
-                    stdout=(result.stdout or "").strip(),
-                    stderr=(result.stderr or "").strip(),
-                    exit_code=int(result.exit_status or 0),
-                )
+                stdout = (result.stdout or "").strip()
+                stderr = (result.stderr or "").strip()
+                exit_code = int(result.exit_status or 0)
+                if self.host.ssh.use_sudo_su and (
+                    "STEADYOPS_SUDO_ERROR" in stdout
+                    or "STEADYOPS_SUDO_ERROR" in stderr
+                    or ("的密码" in stderr and exit_code != 0)
+                    or ("password for" in stderr.lower() and exit_code != 0)
+                ):
+                    hint = (
+                        "sudo 提权失败：请检查服务器设置中的 SSH 密码 / sudo 密码是否正确，"
+                        "以及是否已勾选「登录后需 sudo su」。"
+                    )
+                    stderr = f"{stderr}\n{hint}".strip() if stderr else hint
+                    if exit_code == 0:
+                        exit_code = 1
+                return CommandResult(stdout=stdout, stderr=stderr, exit_code=exit_code)
             except TimeoutError:
                 return CommandResult(stdout="", stderr=f"Command timed out after {timeout}s", exit_code=124)
             except (
@@ -435,14 +492,35 @@ class SSHRemoteExecutor:
         return CommandResult(stdout="", stderr="No restart method configured", exit_code=1)
 
 
+def _looks_like_sudo_auth_error(stderr: str, stdout: str) -> bool:
+    text = f"{stderr}\n{stdout}".lower()
+    return (
+        "[sudo]" in text
+        or "password" in text
+        or "密码" in f"{stderr}\n{stdout}"
+        or "a password is required" in text
+        or "sudo: a terminal is required" in text
+        or "sudo: a password is required" in text
+    )
+
+
 class ExecutorRegistry:
     def __init__(self) -> None:
         self._executors: dict[str, SSHRemoteExecutor] = {}
 
     def get(self, host_id: str, host: HostConfig) -> SSHRemoteExecutor:
-        if host_id not in self._executors:
-            self._executors[host_id] = SSHRemoteExecutor(host)
-        return self._executors[host_id]
+        existing = self._executors.get(host_id)
+        if existing is None:
+            executor = SSHRemoteExecutor(host)
+            self._executors[host_id] = executor
+            return executor
+        existing.update_host(host)
+        return existing
+
+    async def close_host(self, host_id: str) -> None:
+        executor = self._executors.pop(host_id, None)
+        if executor is not None:
+            await executor.close()
 
     async def close_all(self) -> None:
         for executor in self._executors.values():

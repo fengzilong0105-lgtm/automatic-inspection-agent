@@ -204,6 +204,7 @@ class HostEditorDialog(QDialog):
         if error:
             QMessageBox.warning(self, "提示", error)
             return
+        self.result.setPlainText("保存中…")
         self._pending_action = "save"
         host_id = None if self._is_new else self._original_id
         self._bridge.submit(self.service.upsert_host_config(payload, host_id=host_id))

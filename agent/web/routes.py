@@ -369,12 +369,11 @@ def create_app() -> FastAPI:
     @app.delete("/api/hosts/{host_id}")
     async def remove_host(host_id: str, _: None = Depends(_auth_dependency)) -> dict[str, Any]:
         try:
-            delete_host(host_id)
+            return delete_host(host_id)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        return {"deleted": host_id}
 
     @app.post("/api/hosts/{host_id}/test-ssh")
     async def test_host_ssh(host_id: str, _: None = Depends(_auth_dependency)) -> dict[str, Any]:

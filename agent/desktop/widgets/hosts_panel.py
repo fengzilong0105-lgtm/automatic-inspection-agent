@@ -12,7 +12,6 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from agent.desktop.async_call import AsyncCall
 from agent.desktop.widgets.host_editor_dialog import HostEditorDialog
 from agent.desktop.widgets.table_cells import make_text_item
 from agent.services.agent_service import AgentService
@@ -60,12 +59,6 @@ class HostsPanel(QWidget):
         self.table.setColumnWidth(4, 176)
         layout.addWidget(self.table)
 
-        self._delete_bridge = AsyncCall(self)
-        self._delete_bridge.finished.connect(self._on_deleted)
-        self._delete_bridge.failed.connect(
-            lambda msg: QMessageBox.critical(self, "删除失败", msg)
-        )
-
         self.reload()
 
     def reload(self) -> None:
@@ -94,12 +87,11 @@ class HostsPanel(QWidget):
             edit_btn.setCursor(Qt.CursorShape.PointingHandCursor)
             edit_btn.clicked.connect(lambda _checked=False, h=host: self._edit_host(h))
             actions_layout.addWidget(edit_btn)
-            if len(self._hosts) > 1:
-                delete_btn = QPushButton("删除")
-                delete_btn.setObjectName("tableActionButtonDanger")
-                delete_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-                delete_btn.clicked.connect(lambda _checked=False, h=host: self._delete_host(h))
-                actions_layout.addWidget(delete_btn)
+            delete_btn = QPushButton("删除")
+            delete_btn.setObjectName("tableActionButtonDanger")
+            delete_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            delete_btn.clicked.connect(lambda _checked=False, h=host: self._delete_host(h))
+            actions_layout.addWidget(delete_btn)
             self.table.setRowHeight(row, 46)
             self.table.setCellWidget(row, 4, actions)
 
@@ -124,7 +116,8 @@ class HostsPanel(QWidget):
             self.service.set_active_host(host_id)
             self.hosts_changed.emit()
             try:
-                discovered = self.service.scan_host(host_id)
+                future = self.service.scan_host(host_id)
+                discovered = future.result(timeout=180)
                 services = self.service.discovered_to_services(host_id, discovered)
                 self.service.register_services(services)
                 QMessageBox.information(
@@ -149,17 +142,57 @@ class HostsPanel(QWidget):
     def _delete_host(self, host: dict) -> None:
         host_id = host.get("id", "")
         name = host.get("name", host_id)
+        try:
+            bound = [
+                s.get("id", "")
+                for s in self.service.list_services().get("services", [])
+                if s.get("host_id") == host_id
+            ]
+        except Exception:
+            bound = []
+
+        last_hint = (
+            "\n这是当前唯一服务器，删除后可重新新建录入。"
+            if len(self._hosts) <= 1
+            else ""
+        )
+        if bound:
+            message = (
+                f"确定删除「{name}」？\n"
+                f"将同时清除该主机下已注册的 {len(bound)} 个服务。\n"
+                f"删除后可重新录入，视为新服务器。{last_hint}"
+            )
+        else:
+            message = f"确定删除「{name}」？{last_hint}"
+
         answer = QMessageBox.question(
             self,
             "删除服务器",
-            f"确定删除「{name}」？若仍有关联服务将无法删除。",
+            message,
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
         if answer != QMessageBox.StandardButton.Yes:
             return
-        self._delete_bridge.submit(self.service.delete_host(host_id))
 
-    def _on_deleted(self, _result) -> None:
-        self.reload()
-        self.hosts_changed.emit()
+        try:
+            result = self.service.delete_host(host_id)
+            removed = result.get("removed_services") or []
+            incidents = int(result.get("removed_incidents") or 0)
+            cases = int(result.get("removed_problem_cases") or 0)
+            self.reload()
+            self.hosts_changed.emit()
+            parts = [f"已删除服务器「{name}」"]
+            if removed:
+                parts.append(f"关联服务 {len(removed)} 个")
+            if incidents:
+                parts.append(f"告警 {incidents} 条")
+            if cases:
+                parts.append(f"问题报告 {cases} 份")
+            detail = "，".join(parts) if len(parts) == 1 else parts[0] + "；已清理 " + "、".join(parts[1:])
+            warning = result.get("purge_warning")
+            if warning:
+                detail += f"\n\n部分运行时数据清理失败：{warning}"
+            QMessageBox.information(self, "删除成功", detail + "。")
+        except Exception as exc:
+            QMessageBox.critical(self, "删除失败", str(exc))

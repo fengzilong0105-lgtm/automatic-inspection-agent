@@ -287,7 +287,8 @@ python -m agent.launcher
 | 日志/文件 | `download_remote_file` | 下载远程文件到当前 Windows 机器 |
 | 日志/文件 | `collect_remote_artifact` | 采集远程数据成文件并自动下载到本机 |
 | 日志/文件 | `list_config_files` | 列出服务配置文件 |
-| 执行 | `run_remote_command` | 执行只读 shell 命令 |
+| 查找 | `search_host_software` | 按关键字上机查进程/目录（不依赖是否已注册） |
+| 执行 | `run_remote_command` | 只读立即执行；写盘/启停等需确认后执行 |
 | 写操作 | `write_remote_file` | 创建/修改远程文件（需确认） |
 | 写操作 | `delete_remote_file` | 删除远程文件（需确认） |
 | 巡检 | `discovery_scan` | 触发服务扫描 |

@@ -100,7 +100,8 @@ async def auto_extract_memories(
         "- preference: 用户明确表达的回答偏好\n"
         "- service_fact: 已确认的服务路径、启动方式、配置位置\n"
         "- ops_note: 运维注意事项（如需 sudo、特殊路径权限等）\n"
-        "不要编造；没有可记住内容则返回空列表。\n\n"
+        "不要编造；没有可记住内容则返回空列表。\n"
+        "禁止把「未注册/未找到/不存在」类否定结论记为 service_fact（可能只是没上机查找）。\n\n"
         f"用户: {user_text.strip()}\n\n"
         f"助手: {assistant_text.strip()}"
     )
