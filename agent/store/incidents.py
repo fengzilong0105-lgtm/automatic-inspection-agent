@@ -169,6 +169,24 @@ class IncidentStore:
             row = await cursor.fetchone()
         return int(row[0]) if row else 0
 
+    async def delete_by_host(self, host_id: str) -> int:
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute("DELETE FROM incidents WHERE host_id = ?", (host_id,))
+            await db.commit()
+            return int(cursor.rowcount or 0)
+
+    async def delete_restart_history(self, service_ids: list[str]) -> int:
+        if not service_ids:
+            return 0
+        placeholders = ",".join("?" for _ in service_ids)
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                f"DELETE FROM restart_history WHERE service_id IN ({placeholders})",
+                tuple(service_ids),
+            )
+            await db.commit()
+            return int(cursor.rowcount or 0)
+
     def _row_to_incident(self, row: aiosqlite.Row) -> Incident:
         return Incident(
             id=row["id"],

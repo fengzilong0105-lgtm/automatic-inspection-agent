@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from agent.executor.write_policy import is_path_allowed
 from agent.executor.ssh import get_executor_registry
 from agent.models import CommandResult
 from agent.remediation.pending_writes import PendingFileOp, get_pending_file_op_store
@@ -21,15 +20,14 @@ class WriteOrchestrator:
         if not pending:
             return CommandResult(
                 stdout="",
-                stderr="文件操作请求不存在、已过期或会话不匹配",
+                stderr=(
+                    "操作请求不存在或已过期（可能已确认过，或对话已切换）。"
+                    "请让助手重新提交该操作后再确认。"
+                ),
                 exit_code=404,
             )
-        if not is_path_allowed(pending.path, self.settings.config.autonomy):
-            return CommandResult(
-                stdout="",
-                stderr=f"路径未被允许: {pending.path}",
-                exit_code=403,
-            )
+        if pending.action == "command":
+            return await self._run_command(pending)
         if pending.action == "delete":
             return await self._delete(pending)
         return await self._write(pending)
@@ -43,3 +41,11 @@ class WriteOrchestrator:
         host = self.settings.get_host(pending.host_id)
         executor = self.executor_registry.get(pending.host_id, host)
         return await executor.delete_file(pending.path)
+
+    async def _run_command(self, pending: PendingFileOp) -> CommandResult:
+        command = (pending.command or "").strip()
+        if not command:
+            return CommandResult(stdout="", stderr="待确认命令为空", exit_code=400)
+        host = self.settings.get_host(pending.host_id)
+        executor = self.executor_registry.get(pending.host_id, host)
+        return await executor.run(command, timeout=pending.timeout_seconds)

@@ -69,22 +69,73 @@ def upsert_host(host: HostConfig, settings: Settings | None = None) -> HostConfi
     return host
 
 
-def delete_host(host_id: str, settings: Settings | None = None) -> None:
+def delete_host(
+    host_id: str,
+    settings: Settings | None = None,
+    *,
+    cascade_services: bool = True,
+) -> dict:
+    """Delete a host and always remove its registered services from config.
+
+    Runtime DB cleanup (incidents/cases/SSH) is handled by AgentService.delete_host.
+    ``cascade_services`` is kept for compatibility; services are always cleared.
+    """
+    del cascade_services  # always cascade
     settings = settings or get_settings()
-    bound = [s.id for s in settings.config.services if s.host_id == host_id]
-    if bound:
-        raise ValueError(f"主机仍有关联服务，无法删除: {', '.join(bound)}")
+    host_id = (host_id or "").strip()
+    if not host_id:
+        raise ValueError("主机 ID 不能为空")
 
     hosts = [h for h in settings.config.hosts if h.id != host_id]
     if len(hosts) == len(settings.config.hosts):
         raise KeyError(f"Host not found: {host_id}")
 
+    # Exact host_id match; also drop orphan services whose host no longer exists.
+    remaining_host_ids = {h.id for h in hosts}
+    removed_services = [
+        s.id
+        for s in settings.config.services
+        if s.host_id == host_id or s.host_id not in remaining_host_ids
+    ]
+    services = [
+        s
+        for s in settings.config.services
+        if s.host_id != host_id and s.host_id in remaining_host_ids
+    ]
+
     active_host_id = settings.config.active_host_id
     if active_host_id == host_id:
         active_host_id = hosts[0].id if hosts else None
 
-    settings.save(settings.config.model_copy(update={"hosts": hosts, "active_host_id": active_host_id}))
+    active_service_id = settings.config.active_service_id
+    if active_service_id and (
+        active_service_id in removed_services
+        or not any(s.id == active_service_id for s in services)
+    ):
+        host_services = (
+            [s for s in services if s.host_id == active_host_id and s.enabled]
+            if active_host_id
+            else []
+        )
+        active_service_id = host_services[0].id if host_services else None
+
+    update: dict = {
+        "hosts": hosts,
+        "services": services,
+        "active_host_id": active_host_id,
+        "active_service_id": active_service_id,
+    }
+    # 删光主机后允许重新走录入流程
+    if not hosts:
+        update["setup_completed"] = False
+
+    settings.save(settings.config.model_copy(update=update))
     _reset_ssh_pool()
+    return {
+        "deleted": host_id,
+        "removed_services": removed_services,
+        "hosts_remaining": len(hosts),
+    }
 
 
 def set_active_host(host_id: str, settings: Settings | None = None) -> str:

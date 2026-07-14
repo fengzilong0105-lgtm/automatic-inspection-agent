@@ -108,6 +108,12 @@ class CaseStore:
             rows = await cursor.fetchall()
         return [self._row_to_case(row) for row in rows]
 
+    async def delete_by_host(self, host_id: str) -> int:
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute("DELETE FROM problem_cases WHERE host_id = ?", (host_id,))
+            await db.commit()
+            return int(cursor.rowcount or 0)
+
     async def find_open_by_incident(self, incident_id: str) -> ProblemCase | None:
         open_statuses = (
             ProblemCaseStatus.DRAFT.value,

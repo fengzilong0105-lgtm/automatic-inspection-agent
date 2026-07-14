@@ -1,15 +1,21 @@
 from __future__ import annotations
 
 import json
+import re
+import shlex
 from typing import Annotated, Any
 
 from langchain_core.tools import StructuredTool
 
 from agent.config_mgr.hosts import enrich_service_systemd_unit
 from agent.discovery.orchestrator import scan_host, to_service_config
-from agent.executor.command_policy import format_command_result, validate_remote_command
+from agent.executor.command_policy import (
+    classify_remote_command,
+    format_command_result,
+    normalize_remote_command,
+)
 from agent.executor.collect_policy import is_collect_output_path_allowed, normalize_collect_output_path
-from agent.executor.write_policy import is_path_allowed, normalize_remote_path
+from agent.executor.write_policy import normalize_remote_path
 from agent.executor.ssh import get_executor_registry
 from agent.local_files import resolve_local_download_path
 from agent.langchain.context_builder import build_diagnosis_context
@@ -260,19 +266,40 @@ def build_readonly_tools() -> list[StructuredTool]:
         service_id: str | None = None,
         timeout_seconds: int = 60,
     ) -> str:
-        """通过 SSH 在 Linux 主机上执行只读/诊断类 shell 命令（如 ls、ps、grep、systemctl status）。禁止 rm/reboot 等写操作。"""
+        """通过 SSH 在 Linux 主机执行命令。
+
+        只读命令立即执行。
+        写盘 / nohup / 后台 & / kill / systemctl start|stop|restart 等会创建待确认请求；
+        用户在界面点「确认执行」后才会真正执行——不是拒绝，不要改用手写脚本让用户手动跑。
+        """
         try:
-            cmd = validate_remote_command(command)
-            timeout_seconds = max(5, min(int(timeout_seconds), 120))
+            cmd = normalize_remote_command(command)
+            risk = classify_remote_command(cmd)
+            timeout_seconds = max(5, min(int(timeout_seconds), 300))
 
             if service_id:
                 service = settings.get_service(service_id)
                 host = settings.get_host(service.host_id)
             else:
                 host = _resolve_host(host_id)
+            host_label = f"{host.id} ({host.ssh.host})"
+
+            if risk == "confirm":
+                pending = get_pending_file_op_store().create_command(
+                    session_id=chat_session_id.get(),
+                    host_id=host.id,
+                    command=cmd,
+                    timeout_seconds=timeout_seconds,
+                )
+                return _pending_file_op_response(
+                    pending,
+                    host_label,
+                    "已挂起待确认（不是拒绝）。请用户点击界面「确认执行」后，系统会在服务器上真正执行该命令"
+                    "（支持 nohup/后台进程/写盘）。确认完成前不要声称无法启动。",
+                )
+
             executor = registry.get(host.id, host)
             result = await executor.run(cmd, timeout=timeout_seconds)
-            host_label = f"{host.id} ({host.ssh.host})"
             return _tool_result(
                 "run_remote_command",
                 format_command_result(host_label, cmd, result),
@@ -289,17 +316,6 @@ def build_readonly_tools() -> list[StructuredTool]:
         """在 Linux 主机新建或覆盖文本文件。不会立即落盘，需用户在对话中逐次确认后执行。"""
         try:
             normalized = normalize_remote_path(path)
-            if not is_path_allowed(normalized, settings.config.autonomy):
-                return json.dumps(
-                    {
-                        "status": "rejected",
-                        "reason": "路径未被允许（可在配置中开启 write_allow_all_paths）",
-                        "path": normalized,
-                    },
-                    ensure_ascii=False,
-                    indent=2,
-                )
-
             host = _resolve_tool_host(host_id, service_id, settings)
             pending = get_pending_file_op_store().create_write(
                 session_id=chat_session_id.get(),
@@ -324,17 +340,6 @@ def build_readonly_tools() -> list[StructuredTool]:
         """删除 Linux 主机上的文件。不会立即删除，需用户在对话中逐次确认后执行。"""
         try:
             normalized = normalize_remote_path(path)
-            if not is_path_allowed(normalized, settings.config.autonomy):
-                return json.dumps(
-                    {
-                        "status": "rejected",
-                        "reason": "路径未被允许（可在配置中开启 write_allow_all_paths）",
-                        "path": normalized,
-                    },
-                    ensure_ascii=False,
-                    indent=2,
-                )
-
             host = _resolve_tool_host(host_id, service_id, settings)
             pending = get_pending_file_op_store().create_delete(
                 session_id=chat_session_id.get(),
@@ -439,6 +444,46 @@ def build_readonly_tools() -> list[StructuredTool]:
             return json.dumps([d.model_dump() for d in discovered], ensure_ascii=False, indent=2, default=str)
         except Exception as exc:
             return _tool_error("discovery_scan 失败", exc)
+
+    async def search_host_software(keyword: str, host_id: str | None = None) -> str:
+        """在 Linux 主机上按关键字查找软件（不依赖是否已注册）。
+
+        适用于用户说「在服务器上找一下 xxx / 查目录 / 还没启动但要找安装位置」。
+        会检查进程、systemd 单元、常见安装目录与可执行文件路径。
+        """
+        try:
+            kw = (keyword or "").strip()
+            if not kw:
+                return "请提供要查找的关键字，例如 minio、kafka"
+            if not re.fullmatch(r"[A-Za-z0-9_./-]{1,64}", kw):
+                return "关键字包含非法字符，请只使用字母数字、下划线、短横线、点或斜杠"
+            host = _resolve_host(host_id)
+            executor = registry.get(host.id, host)
+            q = shlex.quote(kw)
+            # kw 已白名单校验；通配需不带引号才能被远端 shell 展开
+            # 只读探测：进程 / systemd / PATH / 常见目录
+            cmd = (
+                f"echo '=== processes ==='; "
+                f"pgrep -af {q} || true; "
+                f"echo '=== systemd ==='; "
+                f"systemctl list-units --type=service --all --no-pager 2>/dev/null | "
+                f"grep -i {q} || true; "
+                f"echo '=== which/whereis ==='; "
+                f"command -v {q} 2>/dev/null || true; "
+                f"whereis {q} 2>/dev/null || true; "
+                f"echo '=== common dirs ==='; "
+                f"ls -d /DATA01/app/*{kw}* /opt/*{kw}* /usr/local/*{kw}* "
+                f"/home/*/*{kw}* 2>/dev/null || true; "
+                f"echo '=== find (depth<=3) ==='; "
+                f"find /DATA01/app /opt /usr/local /home -maxdepth 3 "
+                f"-iname {shlex.quote('*' + kw + '*')} 2>/dev/null | head -n 40 || true"
+            )
+            result = await executor.run(cmd, timeout=45)
+            host_label = f"{host.id} ({host.ssh.host})"
+            body = format_command_result(host_label, f"search_host_software:{kw}", result)
+            return _tool_result("search_host_software", body)
+        except Exception as exc:
+            return _tool_error("search_host_software 失败", exc)
 
     async def run_inspection(host_id: str | None = None) -> str:
         """立即执行一次巡检，返回新产生的告警数量。"""
@@ -686,6 +731,7 @@ def build_readonly_tools() -> list[StructuredTool]:
 
     return [
         StructuredTool.from_function(coroutine=list_services, name="list_services"),
+        StructuredTool.from_function(coroutine=search_host_software, name="search_host_software"),
         StructuredTool.from_function(coroutine=get_service_status, name="get_service_status"),
         StructuredTool.from_function(coroutine=get_deployment_info, name="get_deployment_info"),
         StructuredTool.from_function(coroutine=get_host_metrics, name="get_host_metrics"),

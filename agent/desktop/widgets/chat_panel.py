@@ -42,6 +42,7 @@ class ChatPanel(QWidget):
         self.pending_restart: dict | None = None
         self.pending_write: dict | None = None
         self.pending_memory: dict | None = None
+        self._confirming: dict | None = None  # snapshot while confirm request in flight
         self.conversation_id: str | None = None
         self._switching_conversation = False
         self._stream_buffer = ""
@@ -113,6 +114,10 @@ class ChatPanel(QWidget):
         self._bridge = AsyncCall(self)
         self._bridge.finished.connect(self._on_async_finished)
         self._bridge.failed.connect(self._on_async_failed)
+        # 与对话流分离，避免确认结果被聊天回调误吃掉
+        self._action_bridge = AsyncCall(self)
+        self._action_bridge.finished.connect(self._on_confirm_finished)
+        self._action_bridge.failed.connect(self._on_confirm_failed)
 
         self.send_btn.clicked.connect(self.send_message)
         self.input.returnPressed.connect(self.send_message)
@@ -216,6 +221,15 @@ class ChatPanel(QWidget):
             self._update_stream(self._stream_buffer, f"正在调用工具: {tool}…")
         elif evt == "tool_end":
             self._update_stream(self._stream_buffer, "正在整理回答…")
+        elif evt == "confirm_write":
+            data = event.get("data") or {}
+            if isinstance(data, dict) and (data.get("op_id") or data.get("write_id")):
+                if self._confirming:
+                    return
+                self.pending_write = data
+                self.pending_restart = None
+                self.pending_memory = None
+                self._show_pending_write_banner(data)
         elif evt == "history_reset":
             prefix = "（上下文已自动重置）\n\n"
             if not self._stream_buffer.startswith(prefix):
@@ -329,23 +343,31 @@ class ChatPanel(QWidget):
     def confirm_pending(self) -> None:
         if not self.conversation_id:
             return
+        if self._confirming:
+            return
         if self.pending_restart:
-            self._mode = "restart"
-            self._bridge.submit(
+            self._confirming = {"kind": "restart", **self.pending_restart}
+            self.confirm_btn.setEnabled(False)
+            self._action_bridge.submit(
                 self.service.confirm_restart(self.pending_restart["service_id"])
             )
         elif self.pending_write:
-            self._mode = "write"
-            self._bridge.submit(
-                self.service.confirm_write(
-                    self.pending_write.get("write_id") or self.pending_write.get("op_id"),
-                    self.conversation_id,
-                )
+            op_id = self.pending_write.get("write_id") or self.pending_write.get("op_id")
+            if not op_id:
+                self._append_system("确认失败：缺少操作 ID")
+                return
+            self._confirming = {"kind": "write", **self.pending_write}
+            self.confirm_btn.setEnabled(False)
+            session_id = (
+                self.pending_write.get("session_id")
+                or self.conversation_id
             )
+            self._action_bridge.submit(self.service.confirm_write(op_id, session_id))
         elif self.pending_memory:
-            self._mode = "memory"
             mem = self.pending_memory
-            self._bridge.submit(
+            self._confirming = {"kind": "memory", **mem}
+            self.confirm_btn.setEnabled(False)
+            self._action_bridge.submit(
                 self.service.confirm_memory(
                     mem["category"],
                     mem["key"],
@@ -353,6 +375,88 @@ class ChatPanel(QWidget):
                     self.conversation_id,
                 )
             )
+
+    def _on_confirm_finished(self, result: dict) -> None:
+        confirming = self._confirming or {}
+        kind = confirming.get("kind")
+        self._confirming = None
+        self.confirm_btn.setEnabled(True)
+
+        if kind == "restart":
+            ok = bool(result.get("success"))
+            detail = str(result.get("stderr") or result.get("stdout") or "")
+            self._append_system("重启成功" if ok else f"重启失败: {detail}")
+            self._hide_confirm()
+            self._auto_continue_after_confirm("重启服务", detail, success=ok)
+            return
+
+        if kind == "write":
+            ok = bool(result.get("success"))
+            action = confirming.get("action") or "write"
+            if action == "command":
+                label = "命令执行成功" if ok else "命令执行失败"
+            elif action == "delete":
+                label = "删除成功" if ok else "删除失败"
+            else:
+                label = "写操作成功" if ok else "写操作失败"
+            detail = str(result.get("stderr") or result.get("stdout") or "")
+            self._append_system(label if ok or not detail else f"{label}: {detail}")
+            if result.get("stdout"):
+                out = str(result.get("stdout"))
+                self._append_system(out if len(out) <= 2000 else out[:2000] + "…")
+            self._hide_confirm()
+            action_label = {
+                "command": "远程命令",
+                "delete": "删除文件",
+                "write": "写入文件",
+            }.get(action, "写操作")
+            self._auto_continue_after_confirm(action_label, detail, success=ok)
+            return
+
+        if kind == "memory":
+            self._append_system("已记住该条信息")
+            self._hide_confirm()
+            self.memory_updated.emit()
+
+    def _on_confirm_failed(self, message: str) -> None:
+        self._confirming = None
+        self.confirm_btn.setEnabled(True)
+        self._append_system(f"确认执行失败: {message}")
+        self._auto_continue_after_confirm("待确认操作", message, success=False)
+
+    def _auto_continue_after_confirm(
+        self, action_label: str, detail: str, *, success: bool = True
+    ) -> None:
+        """确认后无论成败都回传结果给 Agent，避免用户点了确认却没有后续。"""
+        if not self.conversation_id:
+            return
+        summary = (detail or "").strip()
+        if len(summary) > 1200:
+            summary = summary[:1200] + "…"
+        if success:
+            followup = (
+                f"【系统】用户已确认，「{action_label}」已执行成功。"
+                "请立即继续你计划中的下一步；若下一步仍需确认，请再次调用对应工具。"
+            )
+        else:
+            followup = (
+                f"【系统】用户已确认，「{action_label}」已提交执行但失败。"
+                "请根据错误输出修正后重试；不要再说「请再点一次确认」或假装命令未执行。"
+                "若错误含 sudo/密码，请明确提示用户到「设置→服务器管理」重填密码并「测试 SSH」。"
+            )
+        if summary:
+            followup += f"\n执行输出：\n```text\n{summary}\n```"
+        self._mode = "chat"
+        self._set_chat_busy(True)
+        self._begin_stream("正在继续…" if success else "正在根据失败结果继续…")
+        self._bridge.submit(
+            self.service.chat_stream(
+                followup,
+                session_id=self.conversation_id,
+                confirmed=False,
+                on_event=self._emit_stream_event,
+            )
+        )
 
     def _on_reply(self, result: dict) -> None:
         self._set_chat_busy(False)
@@ -363,28 +467,6 @@ class ChatPanel(QWidget):
             self._set_usage(result.get("usage"))
             self._hide_confirm()
             self._mode = "chat"
-            return
-        if self._mode == "restart":
-            ok = result.get("success")
-            self._append_system(
-                "重启成功" if ok else f"重启失败: {result.get('stderr') or result.get('stdout')}"
-            )
-            self._hide_confirm()
-            self._mode = "chat"
-            return
-        if self._mode == "write":
-            ok = result.get("success")
-            self._append_system(
-                "写操作成功" if ok else f"写操作失败: {result.get('stderr') or result.get('stdout')}"
-            )
-            self._hide_confirm()
-            self._mode = "chat"
-            return
-        if self._mode == "memory":
-            self._append_system("已记住该条信息")
-            self._hide_confirm()
-            self._mode = "chat"
-            self.memory_updated.emit()
             return
 
         msg_type = result.get("type", "message")
@@ -419,11 +501,17 @@ class ChatPanel(QWidget):
         if auto_saved:
             self._append_system(f"已自动记住 {len(auto_saved)} 条信息")
             self.memory_updated.emit()
+
+        # 已有待确认写操作时，优先保留，不被记忆建议冲掉
+        if self.pending_write or self._confirming:
+            self._show_pending_write_banner(self.pending_write or {})
+            self._mode = "chat"
+            return
+
         suggestions = result.get("memory_suggestions") or []
         if suggestions:
             self.pending_memory = suggestions[0]
             self.pending_restart = None
-            self.pending_write = None
             mem = self.pending_memory
             self.confirm_label.setText(
                 f"待确认记忆：[{mem.get('category')}] {mem.get('key')}: {mem.get('value')}"
@@ -434,25 +522,51 @@ class ChatPanel(QWidget):
             self.cancel_btn.show()
             self._mode = "chat"
             return
+
+        # 流式事件可能已带上 pending；没有则再查一次
+        if self.pending_write:
+            self._show_pending_write_banner(self.pending_write)
+            self._mode = "chat"
+            return
         self._mode = "pending"
         self.confirm_btn.setText("确认执行")
         self._bridge.submit(self.service.pending_file_op(self.conversation_id))
+
+    def _show_pending_write_banner(self, data: dict) -> None:
+        if not data:
+            return
+        action = data.get("action") or "write"
+        if action == "command":
+            preview = (data.get("command") or data.get("content_preview") or "").strip()
+            if len(preview) > 80:
+                preview = preview[:80] + "…"
+            self.confirm_label.setText(f"待确认：执行命令 {preview}")
+        elif action == "delete":
+            self.confirm_label.setText(f"待确认：删除 {data.get('path') or ''}")
+        else:
+            self.confirm_label.setText(f"待确认：写入 {data.get('path') or ''}")
+        self.confirm_btn.setText("确认执行")
+        self.confirm_btn.setEnabled(self._confirming is None)
+        self.confirm_frame.show()
+        self.confirm_btn.show()
+        self.cancel_btn.show()
 
     def _on_pending_op(self, data: dict) -> None:
         if data.get("pending"):
             self.pending_write = data
             self.pending_restart = None
-            self.confirm_label.setText("待确认：执行文件写操作")
-            self.confirm_frame.show()
-            self.confirm_btn.show()
-            self.cancel_btn.show()
+            self._show_pending_write_banner(data)
+        self._mode = "chat"
 
     def _hide_confirm(self) -> None:
+        if self._confirming:
+            return
         self.pending_restart = None
         self.pending_write = None
         self.pending_memory = None
         self.confirm_label.setText("")
         self.confirm_btn.setText("确认执行")
+        self.confirm_btn.setEnabled(True)
         self.confirm_frame.hide()
         self.confirm_btn.hide()
         self.cancel_btn.hide()

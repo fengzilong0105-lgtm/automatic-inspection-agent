@@ -7,7 +7,7 @@ from typing import Literal
 
 from agent.executor.write_policy import content_preview, validate_write_content
 
-FileOpAction = Literal["write", "delete"]
+FileOpAction = Literal["write", "delete", "command"]
 
 
 @dataclass
@@ -19,6 +19,8 @@ class PendingFileOp:
     path: str
     content: str | None
     created_at: float
+    command: str | None = None
+    timeout_seconds: int = 60
 
 
 class PendingFileOpStore:
@@ -34,8 +36,8 @@ class PendingFileOpStore:
 
     def _check_session_limit(self, session_id: str) -> None:
         session_items = [item for item in self._pending.values() if item.session_id == session_id]
-        if len(session_items) >= 5:
-            raise ValueError("当前会话待确认文件操作过多，请先确认或取消已有请求")
+        if len(session_items) >= 8:
+            raise ValueError("当前会话待确认操作过多，请先确认或取消已有请求")
 
     def create_write(self, session_id: str, host_id: str, path: str, content: str) -> PendingFileOp:
         self._purge_expired()
@@ -70,14 +72,42 @@ class PendingFileOpStore:
         self._pending[op_id] = item
         return item
 
-    def get(self, op_id: str, session_id: str) -> PendingFileOp | None:
+    def create_command(
+        self,
+        session_id: str,
+        host_id: str,
+        command: str,
+        *,
+        timeout_seconds: int = 60,
+    ) -> PendingFileOp:
         self._purge_expired()
-        item = self._pending.get(op_id)
-        if not item or item.session_id != session_id:
-            return None
+        self._check_session_limit(session_id)
+        op_id = secrets.token_urlsafe(12)
+        item = PendingFileOp(
+            op_id=op_id,
+            session_id=session_id,
+            host_id=host_id,
+            action="command",
+            path="",
+            content=None,
+            command=command,
+            timeout_seconds=max(5, min(int(timeout_seconds), 600)),
+            created_at=time.time(),
+        )
+        self._pending[op_id] = item
         return item
 
-    def pop(self, op_id: str, session_id: str) -> PendingFileOp | None:
+    def get(self, op_id: str, session_id: str | None = None) -> PendingFileOp | None:
+        """Lookup by op_id. session_id is accepted for API compatibility but not required.
+
+        Tool-side ContextVar can fall back to ``default``; op_id itself is an
+        unguessable token so matching on op_id alone is safe for UI confirm.
+        """
+        del session_id  # compatibility only
+        self._purge_expired()
+        return self._pending.get(op_id)
+
+    def pop(self, op_id: str, session_id: str | None = None) -> PendingFileOp | None:
         item = self.get(op_id, session_id)
         if item:
             self._pending.pop(op_id, None)
@@ -87,31 +117,68 @@ class PendingFileOpStore:
         self._purge_expired()
         items = [item for item in self._pending.values() if item.session_id == session_id]
         if not items:
+            # 工具若丢失会话上下文，会落到 default
+            items = [
+                item
+                for item in self._pending.values()
+                if item.session_id in {"default", ""}
+            ]
+        if not items:
             return None
         return max(items, key=lambda item: item.created_at)
 
     def to_confirm_payload(self, item: PendingFileOp, host_label: str) -> dict:
-        action_label = "写入" if item.action == "write" else "删除"
-        payload = {
+        if item.action == "command":
+            command = item.command or ""
+            preview = command if len(command) <= 240 else command[:240] + "…"
+            return {
+                "op_id": item.op_id,
+                "write_id": item.op_id,
+                "action": item.action,
+                "host_id": item.host_id,
+                "host_label": host_label,
+                "session_id": item.session_id,
+                "path": item.path,
+                "command": command,
+                "timeout_seconds": item.timeout_seconds,
+                "content_preview": preview,
+                "requires_confirm": True,
+                "message": (
+                    f"确认在主机 {host_label} 执行命令吗？\n```bash\n{preview}\n```"
+                ),
+            }
+
+        if item.action == "write" and item.content is not None:
+            payload = {
+                "op_id": item.op_id,
+                "write_id": item.op_id,
+                "action": item.action,
+                "host_id": item.host_id,
+                "host_label": host_label,
+                "session_id": item.session_id,
+                "path": item.path,
+                "requires_confirm": True,
+                "content_preview": content_preview(item.content),
+                "content_bytes": len(item.content.encode("utf-8")),
+            }
+            payload["message"] = (
+                f"确认写入/修改 `{item.path}` 吗？（主机: {host_label}，"
+                f"{payload['content_bytes']} 字节）"
+            )
+            return payload
+
+        return {
             "op_id": item.op_id,
             "write_id": item.op_id,
             "action": item.action,
             "host_id": item.host_id,
             "host_label": host_label,
+            "session_id": item.session_id,
             "path": item.path,
             "requires_confirm": True,
+            "content_preview": "",
+            "message": f"确认删除 `{item.path}` 吗？（主机: {host_label}）",
         }
-        if item.action == "write" and item.content is not None:
-            payload["content_preview"] = content_preview(item.content)
-            payload["content_bytes"] = len(item.content.encode("utf-8"))
-            payload["message"] = (
-                f"确认写入/修改 `{item.path}` 吗？（主机: {host_label}，"
-                f"{payload['content_bytes']} 字节）"
-            )
-        else:
-            payload["content_preview"] = ""
-            payload["message"] = f"确认删除 `{item.path}` 吗？（主机: {host_label}）"
-        return payload
 
 
 _pending_file_op_store = PendingFileOpStore()
