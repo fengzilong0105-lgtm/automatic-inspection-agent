@@ -226,10 +226,10 @@ class ChatPanel(QWidget):
             if isinstance(data, dict) and (data.get("op_id") or data.get("write_id")):
                 if self._confirming:
                     return
+                # 只缓存，等本轮流式结束（_on_reply）再展示横幅，避免边输出边弹确认
                 self.pending_write = data
                 self.pending_restart = None
                 self.pending_memory = None
-                self._show_pending_write_banner(data)
         elif evt == "history_reset":
             prefix = "（上下文已自动重置）\n\n"
             if not self._stream_buffer.startswith(prefix):

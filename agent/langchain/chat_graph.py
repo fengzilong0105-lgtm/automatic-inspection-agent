@@ -286,9 +286,10 @@ class ChatAgent:
             return
 
         confirm_write_emitted = False
+        pending_confirm: dict | None = None
 
         async def _run_stream():
-            nonlocal confirm_write_emitted
+            nonlocal pending_confirm
             token = chat_session_id.set(session_id)
             try:
                 config = {"configurable": {"thread_id": session_id}}
@@ -309,12 +310,14 @@ class ChatAgent:
                         yield {"event": "tool_end", "data": _extract_tool_output_text(output)[:800]}
                         pending = parse_file_op_pending(output)
                         if pending:
-                            confirm_write_emitted = True
-                            yield {"event": "confirm_write", "data": pending}
+                            # 等本轮全部文字流式输出完再弹确认框，避免边说边弹、双重引导
+                            pending_confirm = pending
             finally:
                 chat_session_id.reset(token)
 
         def _fallback_confirm_write() -> dict | None:
+            if pending_confirm:
+                return pending_confirm
             pending_item = get_pending_file_op_store().latest_for_session(session_id)
             if not pending_item:
                 return None
@@ -322,25 +325,34 @@ class ChatAgent:
             host_label = f"{host.id} ({host.ssh.host})"
             return get_pending_file_op_store().to_confirm_payload(pending_item, host_label)
 
+        def _emit_confirm_after_stream():
+            nonlocal confirm_write_emitted
+            if confirm_write_emitted:
+                return None
+            fallback = _fallback_confirm_write()
+            if fallback:
+                confirm_write_emitted = True
+                return {"event": "confirm_write", "data": fallback}
+            return None
+
         try:
             async for item in _run_stream():
                 yield item
-            if not confirm_write_emitted:
-                fallback = _fallback_confirm_write()
-                if fallback:
-                    yield {"event": "confirm_write", "data": fallback}
+            confirm_event = _emit_confirm_after_stream()
+            if confirm_event:
+                yield confirm_event
         except Exception as exc:
             if _is_corrupt_history_error(exc):
                 await self.clear_session(session_id)
                 yield {"event": "history_reset", "data": "上下文已自动重置，正在重试…"}
                 confirm_write_emitted = False
+                pending_confirm = None
                 try:
                     async for item in _run_stream():
                         yield item
-                    if not confirm_write_emitted:
-                        fallback = _fallback_confirm_write()
-                        if fallback:
-                            yield {"event": "confirm_write", "data": fallback}
+                    confirm_event = _emit_confirm_after_stream()
+                    if confirm_event:
+                        yield confirm_event
                 except Exception as retry_exc:
                     yield {"event": "error", "data": f"对话处理失败（已重置后重试）: {retry_exc}"}
                     return
