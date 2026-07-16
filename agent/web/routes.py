@@ -111,6 +111,12 @@ class ConfirmWriteRequest(BaseModel):
     session_id: str = "default"
 
 
+class CancelPendingWriteRequest(BaseModel):
+    write_id: str | None = None
+    op_id: str | None = None
+    session_id: str = "default"
+
+
 class KnowledgeCreateRequest(BaseModel):
     category: str
     key: str
@@ -777,6 +783,20 @@ def create_app() -> FastAPI:
             "stderr": result.stderr,
             "exit_code": result.exit_code,
         }
+
+    @app.post("/api/chat/cancel-pending-write")
+    async def cancel_pending_write(
+        body: CancelPendingWriteRequest, _: None = Depends(_auth_dependency)
+    ) -> dict[str, Any]:
+        from agent.remediation.pending_writes import get_pending_file_op_store
+
+        store = get_pending_file_op_store()
+        op_id = body.op_id or body.write_id
+        if op_id:
+            removed = store.discard(op_id, body.session_id)
+            return {"cancelled": removed, "op_id": op_id}
+        count = store.discard_session(body.session_id)
+        return {"cancelled": count > 0, "count": count}
 
     @app.get("/api/chat/knowledge")
     async def chat_knowledge_list(_: None = Depends(_auth_dependency)) -> list[dict[str, Any]]:
