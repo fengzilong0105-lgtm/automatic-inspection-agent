@@ -294,8 +294,9 @@ def build_readonly_tools() -> list[StructuredTool]:
                 return _pending_file_op_response(
                     pending,
                     host_label,
-                    "已挂起待确认（不是拒绝）。请用户点击界面「确认执行」后，系统会在服务器上真正执行该命令"
-                    "（支持 nohup/后台进程/写盘）。确认完成前不要声称无法启动。",
+                    "已挂起待确认（不是拒绝）。请用户点击界面「确认执行」后才会真正执行"
+                    "（支持 nohup/后台进程/写盘）。本轮回复只能引导用户点「确认执行」或「取消」，"
+                    "禁止再给出 A/B/C 或其他文字选项；备选方案留到确认完成后再提。",
                 )
 
             executor = registry.get(host.id, host)
@@ -327,7 +328,8 @@ def build_readonly_tools() -> list[StructuredTool]:
             return _pending_file_op_response(
                 pending,
                 host_label,
-                "已创建写入请求，请等待用户在界面确认后才会落盘。一次只处理一个文件操作。",
+                "已创建写入请求，请等待用户在界面点「确认执行」后才会落盘。"
+                "本轮只能引导用户确认或取消，禁止再给出 A/B/C 等文字选项。",
             )
         except Exception as exc:
             return _tool_error("write_remote_file 失败", exc)
@@ -350,7 +352,8 @@ def build_readonly_tools() -> list[StructuredTool]:
             return _pending_file_op_response(
                 pending,
                 host_label,
-                "已创建删除请求，请等待用户在界面确认后才会执行。",
+                "已创建删除请求，请等待用户在界面点「确认执行」后才会执行。"
+                "本轮只能引导用户确认或取消，禁止再给出 A/B/C 等文字选项。",
             )
         except Exception as exc:
             return _tool_error("delete_remote_file 失败", exc)
