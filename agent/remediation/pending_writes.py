@@ -113,6 +113,23 @@ class PendingFileOpStore:
             self._pending.pop(op_id, None)
         return item
 
+    def discard(self, op_id: str, session_id: str | None = None) -> bool:
+        """Remove a pending op without executing it. Returns True if it existed."""
+        return self.pop(op_id, session_id) is not None
+
+    def discard_session(self, session_id: str) -> int:
+        """Drop all pending ops for a conversation. Returns how many were removed."""
+        self._purge_expired()
+        to_drop = [
+            oid
+            for oid, item in self._pending.items()
+            if item.session_id == session_id
+            or (session_id and item.session_id in {"default", ""})
+        ]
+        for oid in to_drop:
+            self._pending.pop(oid, None)
+        return len(to_drop)
+
     def latest_for_session(self, session_id: str) -> PendingFileOp | None:
         self._purge_expired()
         items = [item for item in self._pending.values() if item.session_id == session_id]

@@ -622,6 +622,25 @@ class AgentService:
         host_label = f"{host.id} ({host.ssh.host})"
         return {"pending": True, **store.to_confirm_payload(item, host_label)}
 
+    def cancel_pending_file_op(
+        self,
+        op_id: str | None = None,
+        session_id: str = "desktop-default",
+    ) -> Any:
+        return self._run(self._cancel_pending_file_op(op_id, session_id))
+
+    async def _cancel_pending_file_op(
+        self, op_id: str | None, session_id: str
+    ) -> dict[str, Any]:
+        from agent.remediation.pending_writes import get_pending_file_op_store
+
+        store = get_pending_file_op_store()
+        if op_id:
+            removed = store.discard(op_id, session_id)
+            return {"cancelled": removed, "op_id": op_id}
+        count = store.discard_session(session_id)
+        return {"cancelled": count > 0, "count": count}
+
     # --- knowledge / memory ---
 
     def list_knowledge(self) -> Any:

@@ -43,6 +43,7 @@ class ChatPanel(QWidget):
         self.pending_write: dict | None = None
         self.pending_memory: dict | None = None
         self._confirming: dict | None = None  # snapshot while confirm request in flight
+        self._confirm_token = 0  # invalidate in-flight confirm after cancel / new click
         self.conversation_id: str | None = None
         self._switching_conversation = False
         self._stream_buffer = ""
@@ -125,7 +126,11 @@ class ChatPanel(QWidget):
         self.new_conv_btn.clicked.connect(self.create_conversation)
         self.conversation_combo.currentIndexChanged.connect(self._on_conversation_changed)
         self.confirm_btn.clicked.connect(self.confirm_pending)
-        self.cancel_btn.clicked.connect(self._hide_confirm)
+        self.cancel_btn.clicked.connect(self._cancel_confirm)
+
+        self._confirm_watchdog = QTimer(self)
+        self._confirm_watchdog.setSingleShot(True)
+        self._confirm_watchdog.timeout.connect(self._on_confirm_watchdog)
 
         self._mode = "bootstrap"
         self._bridge.submit(self.service.load_chat_workspace())
@@ -305,6 +310,9 @@ class ChatPanel(QWidget):
         if not conv_id or conv_id == self.conversation_id:
             return
         self.conversation_id = conv_id
+        if self._confirming:
+            self._confirm_token += 1
+            self._confirming = None
         self._hide_confirm()
         self._cancel_stream()
         self._mode = "switch"
@@ -346,8 +354,7 @@ class ChatPanel(QWidget):
         if self._confirming:
             return
         if self.pending_restart:
-            self._confirming = {"kind": "restart", **self.pending_restart}
-            self.confirm_btn.setEnabled(False)
+            self._begin_confirm({"kind": "restart", **self.pending_restart})
             self._action_bridge.submit(
                 self.service.confirm_restart(self.pending_restart["service_id"])
             )
@@ -356,8 +363,7 @@ class ChatPanel(QWidget):
             if not op_id:
                 self._append_system("确认失败：缺少操作 ID")
                 return
-            self._confirming = {"kind": "write", **self.pending_write}
-            self.confirm_btn.setEnabled(False)
+            self._begin_confirm({"kind": "write", **self.pending_write})
             session_id = (
                 self.pending_write.get("session_id")
                 or self.conversation_id
@@ -365,8 +371,7 @@ class ChatPanel(QWidget):
             self._action_bridge.submit(self.service.confirm_write(op_id, session_id))
         elif self.pending_memory:
             mem = self.pending_memory
-            self._confirming = {"kind": "memory", **mem}
-            self.confirm_btn.setEnabled(False)
+            self._begin_confirm({"kind": "memory", **mem})
             self._action_bridge.submit(
                 self.service.confirm_memory(
                     mem["category"],
@@ -376,12 +381,60 @@ class ChatPanel(QWidget):
                 )
             )
 
+    def _begin_confirm(self, payload: dict) -> None:
+        self._confirm_token += 1
+        self._confirming = {**payload, "_token": self._confirm_token}
+        self.confirm_label.setText("正在执行已确认的操作，请稍候…")
+        self.confirm_btn.setText("执行中…")
+        self.confirm_btn.setEnabled(False)
+        self.cancel_btn.setEnabled(True)
+        self.confirm_frame.show()
+        self.confirm_btn.show()
+        self.cancel_btn.show()
+        self._confirm_watchdog.start(90_000)
+
+    def _on_confirm_watchdog(self) -> None:
+        if not self._confirming:
+            return
+        self.confirm_label.setText(
+            "执行时间较长，仍在等待远端结果…可点「取消」结束等待（远端命令可能仍在跑）"
+        )
+
+    def _cancel_confirm(self) -> None:
+        """取消待确认，并丢弃后端挂起项，避免下轮对话再次弹出。"""
+        if self._confirming:
+            self._confirm_token += 1
+            self._confirming = None
+            self._confirm_watchdog.stop()
+            self._append_system(
+                "已取消等待确认结果。若命令已在远端开始执行，稍后仍可能产生输出。"
+            )
+        pending_write = self.pending_write
+        op_id = None
+        session_id = self.conversation_id
+        if pending_write:
+            op_id = pending_write.get("write_id") or pending_write.get("op_id")
+            session_id = pending_write.get("session_id") or self.conversation_id
+        self._hide_confirm()
+        if pending_write and self.conversation_id:
+            # fire-and-forget：不要走 _action_bridge，以免结果被当成确认回调
+            self.service.cancel_pending_file_op(
+                op_id, session_id or self.conversation_id
+            )
+
     def _on_confirm_finished(self, result: dict) -> None:
         confirming = self._confirming or {}
-        kind = confirming.get("kind")
+        token = confirming.get("_token")
+        self._confirm_watchdog.stop()
         self._confirming = None
         self.confirm_btn.setEnabled(True)
+        self.confirm_btn.setText("确认执行")
 
+        # 用户已点取消 / 新确认覆盖时，忽略过期回调，避免卡死或重复续聊
+        if token is not None and token != self._confirm_token:
+            return
+
+        kind = confirming.get("kind")
         if kind == "restart":
             ok = bool(result.get("success"))
             detail = str(result.get("stderr") or result.get("stdout") or "")
@@ -417,11 +470,22 @@ class ChatPanel(QWidget):
             self._append_system("已记住该条信息")
             self._hide_confirm()
             self.memory_updated.emit()
+            return
+
+        # 未知 kind：至少解锁横幅，避免一直灰着
+        self._hide_confirm()
 
     def _on_confirm_failed(self, message: str) -> None:
+        confirming = self._confirming or {}
+        token = confirming.get("_token")
+        self._confirm_watchdog.stop()
         self._confirming = None
         self.confirm_btn.setEnabled(True)
+        self.confirm_btn.setText("确认执行")
+        if token is not None and token != self._confirm_token:
+            return
         self._append_system(f"确认执行失败: {message}")
+        self._hide_confirm()
         self._auto_continue_after_confirm("待确认操作", message, success=False)
 
     def _auto_continue_after_confirm(
@@ -502,9 +566,14 @@ class ChatPanel(QWidget):
             self._append_system(f"已自动记住 {len(auto_saved)} 条信息")
             self.memory_updated.emit()
 
+        # 确认执行进行中时不要重绘「待确认」横幅，否则按钮会一直灰着像卡住
+        if self._confirming:
+            self._mode = "chat"
+            return
+
         # 已有待确认写操作时，优先保留，不被记忆建议冲掉
-        if self.pending_write or self._confirming:
-            self._show_pending_write_banner(self.pending_write or {})
+        if self.pending_write:
+            self._show_pending_write_banner(self.pending_write)
             self._mode = "chat"
             return
 
@@ -523,17 +592,13 @@ class ChatPanel(QWidget):
             self._mode = "chat"
             return
 
-        # 流式事件可能已带上 pending；没有则再查一次
-        if self.pending_write:
-            self._show_pending_write_banner(self.pending_write)
-            self._mode = "chat"
-            return
-        self._mode = "pending"
-        self.confirm_btn.setText("确认执行")
-        self._bridge.submit(self.service.pending_file_op(self.conversation_id))
+        # 流式事件已带上本轮 pending；不再去 store 捞历史残留
+        self._mode = "chat"
 
     def _show_pending_write_banner(self, data: dict) -> None:
         if not data:
+            return
+        if self._confirming:
             return
         action = data.get("action") or "write"
         if action == "command":
@@ -546,12 +611,16 @@ class ChatPanel(QWidget):
         else:
             self.confirm_label.setText(f"待确认：写入 {data.get('path') or ''}")
         self.confirm_btn.setText("确认执行")
-        self.confirm_btn.setEnabled(self._confirming is None)
+        self.confirm_btn.setEnabled(True)
+        self.cancel_btn.setEnabled(True)
         self.confirm_frame.show()
         self.confirm_btn.show()
         self.cancel_btn.show()
 
     def _on_pending_op(self, data: dict) -> None:
+        if self._confirming:
+            self._mode = "chat"
+            return
         if data.get("pending"):
             self.pending_write = data
             self.pending_restart = None
@@ -559,14 +628,14 @@ class ChatPanel(QWidget):
         self._mode = "chat"
 
     def _hide_confirm(self) -> None:
-        if self._confirming:
-            return
+        self._confirm_watchdog.stop()
         self.pending_restart = None
         self.pending_write = None
         self.pending_memory = None
         self.confirm_label.setText("")
         self.confirm_btn.setText("确认执行")
         self.confirm_btn.setEnabled(True)
+        self.cancel_btn.setEnabled(True)
         self.confirm_frame.hide()
         self.confirm_btn.hide()
         self.cancel_btn.hide()

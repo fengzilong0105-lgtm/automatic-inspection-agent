@@ -1129,14 +1129,12 @@ function dashboard() {
             } else if (event === "done") {
               const cur = this.messages[assistantIdx];
               finishAssistant(cur.text || "已完成查询。", false);
-              await this.syncPendingFileOp();
               return;
             }
           }
         }
         const cur = this.messages[assistantIdx];
         finishAssistant(cur.text || "已完成查询。", false);
-        await this.syncPendingFileOp();
       } catch (e) {
         finishAssistant(`请求失败: ${e.message}`, false);
       } finally {
@@ -1189,12 +1187,32 @@ function dashboard() {
     },
 
     async syncPendingFileOp() {
+      // 仅用于页面初次加载；日常对话依赖本轮 confirm_write 事件，避免把历史残留再次捞出
       if (this.pendingWrite) return;
       try {
         const data = await this.api(`/api/chat/pending-file-op?session_id=${encodeURIComponent(this.sessionId)}`);
         if (data && data.pending) {
           this.pendingWrite = data;
         }
+      } catch {
+        /* ignore */
+      }
+    },
+
+    async cancelPendingWrite() {
+      const pending = this.pendingWrite;
+      this.pendingWrite = null;
+      if (!pending) return;
+      const opId = pending.op_id || pending.write_id;
+      try {
+        await this.api("/api/chat/cancel-pending-write", {
+          method: "POST",
+          body: JSON.stringify({
+            session_id: this.sessionId,
+            write_id: opId,
+            op_id: opId,
+          }),
+        });
       } catch {
         /* ignore */
       }

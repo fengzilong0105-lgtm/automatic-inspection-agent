@@ -17,7 +17,6 @@ from agent.langchain.tools import (
     parse_file_op_pending,
 )
 from agent.remediation.orchestrator import ActionOrchestrator
-from agent.remediation.pending_writes import get_pending_file_op_store
 from agent.settings import Settings, get_settings
 from agent.store.chat import get_chat_store
 from agent.store.knowledge import get_knowledge_store
@@ -315,25 +314,13 @@ class ChatAgent:
             finally:
                 chat_session_id.reset(token)
 
-        def _fallback_confirm_write() -> dict | None:
-            if pending_confirm:
-                return pending_confirm
-            pending_item = get_pending_file_op_store().latest_for_session(session_id)
-            if not pending_item:
-                return None
-            host = self.settings.get_host(pending_item.host_id)
-            host_label = f"{host.id} ({host.ssh.host})"
-            return get_pending_file_op_store().to_confirm_payload(pending_item, host_label)
-
         def _emit_confirm_after_stream():
             nonlocal confirm_write_emitted
-            if confirm_write_emitted:
+            if confirm_write_emitted or not pending_confirm:
                 return None
-            fallback = _fallback_confirm_write()
-            if fallback:
-                confirm_write_emitted = True
-                return {"event": "confirm_write", "data": fallback}
-            return None
+            # 只弹本轮工具新挂起的确认；不要用 latest_for_session 把历史残留又捞出来
+            confirm_write_emitted = True
+            return {"event": "confirm_write", "data": pending_confirm}
 
         try:
             async for item in _run_stream():
