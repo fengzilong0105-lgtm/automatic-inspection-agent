@@ -245,6 +245,7 @@ class DiscoveredService(BaseModel):
     config_files: list[ConfigFileCandidate] = Field(default_factory=list)
     spring_profile: str | None = None
     confidence: float = 0.5
+    running: bool = True
     evidence: dict[str, str] = Field(default_factory=dict)
 
 

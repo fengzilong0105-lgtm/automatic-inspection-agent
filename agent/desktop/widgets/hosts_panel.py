@@ -120,11 +120,13 @@ class HostsPanel(QWidget):
                 discovered = future.result(timeout=180)
                 services = self.service.discovered_to_services(host_id, discovered)
                 self.service.register_services(services)
-                QMessageBox.information(
-                    self,
-                    "扫描完成",
-                    f"已注册 {len(services)} 个服务。",
-                )
+                # 注册完成后再通知一次，让概览页拿到新注册的服务
+                self.hosts_changed.emit()
+                stopped = sum(1 for item in discovered if not item.get("running", True))
+                message = f"已注册 {len(services)} 个服务。"
+                if stopped:
+                    message += f"\n其中 {stopped} 个当前未运行，已默认停用巡检，可在服务列表中手动启用。"
+                QMessageBox.information(self, "扫描完成", message)
             except Exception as exc:
                 QMessageBox.warning(self, "扫描失败", str(exc))
 

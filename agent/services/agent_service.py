@@ -63,6 +63,20 @@ from agent.services.ops_case_ops import (
 from agent.store.incidents import IncidentStore
 
 
+def disabled_service_detail(service: ServiceConfig) -> str:
+    """概览里停用服务的说明文字，带上部署位置，方便运维定位。"""
+    location = (
+        service.jar_path
+        or service.deploy_dir
+        or service.compose_file
+        or service.container_name
+        or service.systemd_unit
+    )
+    if location:
+        return f"已停用巡检（可手动启用）· 位置: {location}"
+    return "已停用巡检（可手动启用）"
+
+
 class AgentService:
     """Business facade for the desktop UI (same capabilities as the former Web API)."""
 
@@ -414,9 +428,11 @@ class AgentService:
     async def _status_summary(self, host_id: str | None = None) -> list[dict[str, Any]]:
         settings = get_settings()
         registry = get_executor_registry()
-        services = settings.get_enabled_services()
+        all_services = settings.config.services
         if host_id:
-            services = [s for s in services if s.host_id == host_id]
+            all_services = [s for s in all_services if s.host_id == host_id]
+        services = [s for s in all_services if s.enabled]
+        disabled_services = [s for s in all_services if not s.enabled]
 
         by_host: dict[str, list] = defaultdict(list)
         for service in services:
@@ -462,7 +478,48 @@ class AgentService:
         results: list[dict[str, Any]] = []
         for chunk in chunks:
             results.extend(chunk)
+        # 停用巡检的服务也要出现在概览里（不做状态探测），否则用户看到的总数和扫描注册数对不上
+        for service in disabled_services:
+            results.append(
+                {
+                    "service": service.model_dump(mode="json"),
+                    "status": {
+                        "service_id": service.id,
+                        "running": None,
+                        "detail": disabled_service_detail(service),
+                        "health_ok": None,
+                        "health_detail": "",
+                    },
+                    "disabled": True,
+                }
+            )
         return results
+
+    def set_service_enabled(self, service_id: str, enabled: bool) -> dict[str, Any]:
+        settings = get_settings()
+        services: list[ServiceConfig] = []
+        found = False
+        for svc in settings.config.services:
+            if svc.id == service_id:
+                svc = svc.model_copy(update={"enabled": enabled})
+                found = True
+            services.append(svc)
+        if not found:
+            raise ValueError(f"服务不存在: {service_id}")
+        settings.save(settings.config.model_copy(update={"services": services}))
+        return {"id": service_id, "enabled": enabled}
+
+    def remove_service(self, service_id: str) -> dict[str, Any]:
+        """从注册表移除服务（比如扫描误报的依赖 jar）。"""
+        settings = get_settings()
+        services = [s for s in settings.config.services if s.id != service_id]
+        if len(services) == len(settings.config.services):
+            raise ValueError(f"服务不存在: {service_id}")
+        update: dict[str, Any] = {"services": services}
+        if settings.config.active_service_id == service_id:
+            update["active_service_id"] = services[0].id if services else None
+        settings.save(settings.config.model_copy(update=update))
+        return {"removed": service_id}
 
     def list_incidents(self) -> Any:
         return self._run(self._list_incidents())

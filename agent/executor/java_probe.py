@@ -238,50 +238,133 @@ def parse_profile_from_cmd(cmd: str) -> str | None:
     return match.group(1) if match else None
 
 
-async def list_java_processes(executor) -> list[dict]:
-    """Fetch ps/jps once and load process details for all Java PIDs on the host."""
-    import asyncio
+# 单次往返拿到全部 Java 进程的 pid/cmdline/cwd/cgroup/日志候选 + 全量 ss 端口表，
+# 避免逐 PID 多次 SSH 往返（跳板机/高延迟链路下扫描慢且易超时）。
+_BATCH_JAVA_SCRIPT = (
+    "pids=$({ ps -eo pid,cmd | grep java | grep -v grep | awk '{print $1}'; "
+    "jps -q 2>/dev/null; } | sort -un); "
+    "echo '##PS_BEGIN'; ps -eo pid,cmd | grep java | grep -v grep || true; echo '##PS_END'; "
+    "echo '##JPS_BEGIN'; jps -l 2>/dev/null || true; echo '##JPS_END'; "
+    "echo '##SS_BEGIN'; ss -tlnp 2>/dev/null || true; echo '##SS_END'; "
+    "for p in $pids; do "
+    "echo \"##PID $p\"; "
+    "cw=$(readlink -f /proc/$p/cwd 2>/dev/null || readlink /proc/$p/cwd 2>/dev/null); "
+    "[ -z \"$cw\" ] && cw=$(pwdx $p 2>/dev/null | awk '{print $2}'); "
+    "echo \"##CWD $cw\"; "
+    "printf '%s ' '##CMD'; tr '\\0' ' ' < /proc/$p/cmdline 2>/dev/null; echo; "
+    "echo \"##UNIT $(cat /proc/$p/cgroup 2>/dev/null | grep -oE '[a-zA-Z0-9@._-]+\\.service' | head -1)\"; "
+    "if [ -n \"$cw\" ]; then for f in app.log nohup.out logs/app.log logs/spring.log; do "
+    "[ -e \"$cw/$f\" ] && echo \"##LOG $cw/$f\"; done; fi; "
+    "done"
+)
 
-    pid_cmds: dict[int, str] = {}
 
-    ps = await executor.run("ps -eo pid,cmd | grep java | grep -v grep || true")
-    for line in ps.stdout.splitlines():
+def _parse_ss_pid_ports(ss_lines: list[str]) -> dict[int, list[int]]:
+    ports: dict[int, set[int]] = {}
+    pid_re = re.compile(r"pid=(\d+)")
+    for line in ss_lines:
+        pids = [int(m) for m in pid_re.findall(line)]
+        if not pids:
+            continue
+        for part in line.split():
+            if ":" in part and part.rsplit(":", 1)[-1].isdigit():
+                port = int(part.rsplit(":", 1)[-1])
+                for pid in pids:
+                    ports.setdefault(pid, set()).add(port)
+                break
+    return {pid: sorted(vals) for pid, vals in ports.items()}
+
+
+def parse_batch_java_output(stdout: str) -> list[dict]:
+    """Parse the output of _BATCH_JAVA_SCRIPT into process dicts."""
+    lines = stdout.splitlines()
+    sections: dict[str, list[str]] = {"PS": [], "JPS": [], "SS": []}
+    detail_lines: list[str] = []
+    current: str | None = None
+    for line in lines:
+        stripped = line.strip()
+        if stripped in ("##PS_BEGIN", "##JPS_BEGIN", "##SS_BEGIN"):
+            current = stripped[2:-6]
+            continue
+        if stripped in ("##PS_END", "##JPS_END", "##SS_END"):
+            current = None
+            continue
+        if current is not None:
+            sections[current].append(line)
+        else:
+            detail_lines.append(line)
+
+    ps_cmds: dict[int, str] = {}
+    for line in sections["PS"]:
         pid, cmd = parse_ps_java_line(line)
-        if pid is None:
-            continue
-        pid_cmds[pid] = cmd
-
-    jps = await executor.run("jps -l 2>/dev/null || jps 2>/dev/null || true")
-    for line in jps.stdout.splitlines():
+        if pid is not None:
+            ps_cmds[pid] = cmd
+    jps_cmds: dict[int, str] = {}
+    for line in sections["JPS"]:
         pid, cmd = parse_ps_java_line(line)
-        if pid is None or pid in pid_cmds:
+        if pid is None or cmd.strip().lower() in _JPS_SKIP:
             continue
-        if cmd.strip().lower() in _JPS_SKIP:
-            continue
-        pid_cmds[pid] = cmd
+        jps_cmds[pid] = cmd
+    pid_ports = _parse_ss_pid_ports(sections["SS"])
 
-    sem = asyncio.Semaphore(6)
+    processes: list[dict] = []
+    proc: dict | None = None
 
-    async def load_process(pid: int, cmd: str) -> dict:
-        async with sem:
-            details = await get_process_details(executor, pid, include_logs=False)
-            cmdline = cmd or details.get("cmdline", "")
-            jar_path = parse_jar_from_cmd(cmdline)
-            if not jar_path and cmdline and " " not in cmdline.strip():
-                jar_path = cmdline.strip()
-            return {
+    def _finish(item: dict | None) -> None:
+        if item is None:
+            return
+        pid = item["pid"]
+        cmdline = item.get("cmdline") or ps_cmds.get(pid) or jps_cmds.get(pid) or ""
+        if not cmdline:
+            return
+        jar_path = parse_jar_from_cmd(cmdline)
+        if not jar_path and cmdline and " " not in cmdline.strip():
+            jar_path = cmdline.strip()
+        processes.append(
+            {
                 "pid": pid,
                 "cmdline": cmdline,
-                "deploy_dir": details.get("deploy_dir"),
+                "deploy_dir": item.get("deploy_dir") or None,
                 "jar_path": jar_path,
                 "spring_profile": parse_profile_from_cmd(cmdline),
-                "listen_ports": details.get("listen_ports", []),
-                "log_candidates": details.get("log_candidates", []),
+                "listen_ports": pid_ports.get(pid, []),
+                "log_candidates": item.get("log_candidates", []),
+                "systemd_unit": item.get("systemd_unit") or None,
             }
+        )
 
-    if not pid_cmds:
+    for line in detail_lines:
+        stripped = line.strip()
+        if stripped.startswith("##PID "):
+            _finish(proc)
+            pid_text = stripped[6:].strip()
+            proc = {"pid": int(pid_text), "log_candidates": []} if pid_text.isdigit() else None
+        elif proc is None:
+            continue
+        elif stripped.startswith("##CWD"):
+            proc["deploy_dir"] = stripped[5:].strip()
+        elif stripped.startswith("##CMD"):
+            proc["cmdline"] = stripped[5:].strip()
+        elif stripped.startswith("##UNIT"):
+            proc["systemd_unit"] = stripped[6:].strip()
+        elif stripped.startswith("##LOG "):
+            proc["log_candidates"].append(stripped[6:].strip())
+    _finish(proc)
+    return processes
+
+
+async def list_java_processes(executor, *, strict: bool = False) -> list[dict]:
+    """Fetch all Java process details in a single SSH round trip.
+
+    strict=True 时，SSH 传输层失败（超时/断连）会抛异常而不是静默返回空列表，
+    避免「探测出 0 个服务」这种假结果。
+    """
+    result = await executor.run(_BATCH_JAVA_SCRIPT, timeout=45)
+    if result.exit_code in (124, 255) and not result.stdout:
+        if strict:
+            raise RuntimeError(f"Java 进程探测失败（SSH 命令未成功）: {result.stderr or 'no output'}")
         return []
-    return list(await asyncio.gather(*(load_process(pid, cmd) for pid, cmd in pid_cmds.items())))
+    return parse_batch_java_output(result.stdout)
 
 
 def _match_java_processes(service: ServiceConfig, processes: list[dict]) -> list[dict]:

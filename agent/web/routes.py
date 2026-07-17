@@ -489,9 +489,11 @@ def create_app() -> FastAPI:
 
         settings = get_settings()
         registry = get_executor_registry()
-        services = settings.get_enabled_services()
+        all_services = settings.config.services
         if host_id:
-            services = [s for s in services if s.host_id == host_id]
+            all_services = [s for s in all_services if s.host_id == host_id]
+        services = [s for s in all_services if s.enabled]
+        disabled_services = [s for s in all_services if not s.enabled]
 
         by_host: dict[str, list] = defaultdict(list)
         for service in services:
@@ -539,6 +541,23 @@ def create_app() -> FastAPI:
         results: list[dict[str, Any]] = []
         for chunk in chunks:
             results.extend(chunk)
+        # 停用巡检的服务也返回（不探测），保证概览总数与注册数一致
+        from agent.services.agent_service import disabled_service_detail
+
+        for service in disabled_services:
+            results.append(
+                {
+                    "service": service.model_dump(mode="json"),
+                    "status": {
+                        "service_id": service.id,
+                        "running": None,
+                        "detail": disabled_service_detail(service),
+                        "health_ok": None,
+                        "health_detail": "",
+                    },
+                    "disabled": True,
+                }
+            )
         return results
 
     @app.get("/api/incidents")
