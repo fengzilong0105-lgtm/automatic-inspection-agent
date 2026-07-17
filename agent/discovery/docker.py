@@ -10,13 +10,16 @@ if TYPE_CHECKING:
 
 async def detect_docker(executor: SSHRemoteExecutor, host_id: str) -> list[DiscoveredService]:
     services: list[DiscoveredService] = []
+    # -a：把已停止的容器也纳入（标记 running=False，注册后默认不巡检）
     result = await executor.run(
-        "docker ps --format '{{.ID}}|{{.Names}}|{{.Image}}|{{.Ports}}' 2>/dev/null || true"
+        "docker ps -a --format '{{.ID}}|{{.Names}}|{{.Image}}|{{.State}}|{{.Ports}}' 2>/dev/null || true",
+        timeout=30,
     )
     for line in result.stdout.splitlines():
         if not line.strip() or "|" not in line:
             continue
-        cid, name, image, ports = (line.split("|", 3) + ["", "", "", ""])[:4]
+        cid, name, image, state, ports = (line.split("|", 4) + ["", "", "", "", ""])[:5]
+        running = state.strip().lower() == "running"
         listen_ports = _parse_ports(ports)
         services.append(
             DiscoveredService(
@@ -26,8 +29,14 @@ async def detect_docker(executor: SSHRemoteExecutor, host_id: str) -> list[Disco
                 service_type=ServiceType.DOCKER,
                 container_name=name,
                 listen_ports=listen_ports,
-                confidence=0.85,
-                evidence={"source": "docker ps", "image": image, "container_id": cid},
+                confidence=0.85 if running else 0.6,
+                running=running,
+                evidence={
+                    "source": "docker ps -a",
+                    "image": image,
+                    "container_id": cid,
+                    "state": state,
+                },
             )
         )
     return services

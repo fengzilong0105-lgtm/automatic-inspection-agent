@@ -76,7 +76,7 @@ function dashboard() {
 
     pendingServiceCount() {
       return this.hostSummary().filter(
-        (item) => item.status.running === null || item.status.running === undefined
+        (item) => !item.disabled && (item.status.running === null || item.status.running === undefined)
       ).length;
     },
 
@@ -896,7 +896,8 @@ function dashboard() {
         host_id: d.host_id,
         name: d.suggested_name,
         type: d.service_type,
-        enabled: true,
+        // 未运行的服务默认停用巡检，避免注册后立刻告警
+        enabled: d.running !== false,
         jar_path: d.jar_path,
         deploy_dir: d.deploy_dir,
         systemd_unit: d.systemd_unit,

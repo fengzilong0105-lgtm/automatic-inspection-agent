@@ -5,69 +5,49 @@ from typing import TYPE_CHECKING
 
 from agent.executor.java_probe import (
     _CONFIG_SUFFIXES,
-    get_process_details,
+    list_java_processes,
     parse_jar_from_cmd,
-    parse_profile_from_cmd,
-    parse_ps_java_line,
 )
-from agent.executor.systemd_probe import detect_systemd_unit_from_pid
 from agent.models import DiscoveredService, ServiceType
 
 if TYPE_CHECKING:
     from agent.executor.ssh import SSHRemoteExecutor
 
-_JPS_SKIP = frozenset({"jps", "jar"})
 
-
-async def detect_java(executor: SSHRemoteExecutor, host_id: str) -> list[DiscoveredService]:
+async def detect_java(
+    executor: SSHRemoteExecutor, host_id: str, *, process_index: list[dict] | None = None
+) -> list[DiscoveredService]:
+    """Detect running Java services in a single batched SSH round trip."""
+    processes = (
+        process_index if process_index is not None else await list_java_processes(executor, strict=True)
+    )
     services: list[DiscoveredService] = []
-    seen_pids: set[int] = set()
-
-    ps = await executor.run("ps -eo pid,cmd | grep java | grep -v grep || true")
-    for line in ps.stdout.splitlines():
-        pid, cmd = parse_ps_java_line(line)
-        if pid is None or pid in seen_pids or "grep" in cmd:
-            continue
-        if "java" not in cmd.lower():
-            continue
-        seen_pids.add(pid)
-        discovered = await _build_discovered(executor, host_id, pid, cmd)
+    for proc in processes:
+        discovered = _build_discovered(host_id, proc)
         if discovered is not None:
             services.append(discovered)
-
-    jps = await executor.run("jps -l 2>/dev/null || jps 2>/dev/null || true")
-    for line in jps.stdout.splitlines():
-        pid, cmd = parse_ps_java_line(line)
-        if pid is None or pid in seen_pids:
-            continue
-        simple = cmd.strip()
-        if simple.lower() in _JPS_SKIP:
-            continue
-        seen_pids.add(pid)
-        discovered = await _build_discovered(executor, host_id, pid, simple)
-        if discovered is not None:
-            services.append(discovered)
-
     return services
 
 
-async def _build_discovered(
-    executor: SSHRemoteExecutor, host_id: str, pid: int, cmd: str
-) -> DiscoveredService | None:
+def _build_discovered(host_id: str, proc: dict) -> DiscoveredService | None:
+    cmd = proc.get("cmdline") or ""
+    pid = proc.get("pid")
     identity = _identity_from_cmd(cmd)
-    if identity is None:
+    if identity is None or pid is None:
         return None
     suggested_id, suggested_name = identity
 
-    details = await get_process_details(executor, pid)
-    jar_path = parse_jar_from_cmd(cmd)
-    if jar_path and not jar_path.startswith("/") and details.get("deploy_dir"):
-        jar_path = f"{details['deploy_dir']}/{jar_path.split('/')[-1]}"
+    deploy_dir = proc.get("deploy_dir")
+    jar_path = proc.get("jar_path") or parse_jar_from_cmd(cmd)
+    if jar_path and not jar_path.endswith(".jar"):
+        # jps 只给主类名（如 QuorumPeerMain）时不要冒充 jar 路径
+        jar_path = None
+    if jar_path and not jar_path.startswith("/") and deploy_dir:
+        jar_path = f"{deploy_dir}/{jar_path.split('/')[-1]}"
 
-    deploy_dir = details.get("deploy_dir")
-    log_path = details["log_candidates"][0] if details.get("log_candidates") else None
-    profile = parse_profile_from_cmd(cmd)
-    systemd_unit = await detect_systemd_unit_from_pid(executor, pid)
+    log_candidates = proc.get("log_candidates") or []
+    log_path = log_candidates[0] if log_candidates else None
+    systemd_unit = proc.get("systemd_unit")
 
     evidence = {
         "source": "ps+jps",
@@ -87,10 +67,11 @@ async def _build_discovered(
         jar_path=jar_path,
         deploy_dir=deploy_dir,
         systemd_unit=systemd_unit,
-        listen_ports=details.get("listen_ports", []),
+        listen_ports=proc.get("listen_ports", []),
         log_path=log_path,
-        spring_profile=profile,
+        spring_profile=proc.get("spring_profile"),
         confidence=0.92 if systemd_unit else (0.9 if deploy_dir else 0.75),
+        running=True,
         evidence=evidence,
     )
 

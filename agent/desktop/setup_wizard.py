@@ -453,10 +453,15 @@ class ScanPage(QWizardPage):
 
     def _on_scan_done(self, items: list) -> None:
         self.discovered = items
-        lines = [f"发现 {len(items)} 个服务："]
+        stopped = sum(1 for item in items if not item.get("running", True))
+        header = f"发现 {len(items)} 个服务："
+        if stopped:
+            header = f"发现 {len(items)} 个服务（{stopped} 个未运行，注册后默认停用巡检）："
+        lines = [header]
         for item in items:
+            status = "" if item.get("running", True) else " [未运行]"
             lines.append(
-                f"- {item.get('suggested_id')} ({item.get('type')}) "
+                f"- {item.get('suggested_id')} ({item.get('service_type')}){status} "
                 f"confidence={item.get('confidence')}"
             )
         self.result.setPlainText("\n".join(lines))

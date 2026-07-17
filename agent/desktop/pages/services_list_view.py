@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QLineEdit,
     QPushButton,
@@ -12,9 +14,19 @@ from PySide6.QtWidgets import (
 )
 
 from agent.desktop.widgets.card import Card
+from agent.desktop.widgets.table_cells import make_text_item
+
+_FILTER_TITLES = {
+    "ok": "正常服务",
+    "bad": "异常服务",
+    "disabled": "停用巡检的服务",
+}
 
 
 class ServicesListView(QWidget):
+    enable_service = Signal(str)
+    remove_service = Signal(str)
+
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._filter = "ok"
@@ -46,12 +58,30 @@ class ServicesListView(QWidget):
         self.search_input.setPlaceholderText("按服务名称或 ID 搜索…")
         search_layout.addWidget(self.search_input)
 
-        self.table = QTableWidget(0, 5)
+        self.table = QTableWidget(0, 6)
         self.table.setAlternatingRowColors(True)
         self.table.setShowGrid(False)
         self.table.verticalHeader().setVisible(False)
-        self.table.setHorizontalHeaderLabels(["服务", "类型", "运行", "健康", "详情"])
-        self.table.horizontalHeader().setStretchLastSection(True)
+        self.table.verticalHeader().setDefaultSectionSize(46)
+        self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.table.setTextElideMode(Qt.TextElideMode.ElideRight)
+        self.table.setHorizontalHeaderLabels(["服务", "类型", "运行", "健康", "详情", "操作"])
+        header = self.table.horizontalHeader()
+        header.setStretchLastSection(False)
+        # 服务名拉宽，避免 zstd-jni-1.5.6-4 一类被截成 zstd-...
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
+        self.table.setColumnWidth(0, 240)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
+        self.table.setColumnWidth(1, 72)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
+        self.table.setColumnWidth(2, 72)
+        header.setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)
+        self.table.setColumnWidth(3, 72)
+        header.setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
+        # 操作列固定，保证「启用巡检」「移除」完整可见
+        header.setSectionResizeMode(5, QHeaderView.ResizeMode.Fixed)
+        self.table.setColumnWidth(5, 200)
 
         card.content_layout.setSpacing(0)
         card.content_layout.addWidget(toolbar)
@@ -64,7 +94,7 @@ class ServicesListView(QWidget):
     def show_list(self, filter_kind: str, summary: list[dict]) -> None:
         self._filter = filter_kind
         self._summary = summary
-        self.title_label.setText("正常服务" if filter_kind == "ok" else "异常服务")
+        self.title_label.setText(_FILTER_TITLES.get(filter_kind, "服务列表"))
         self.search_input.clear()
         self._render_table()
 
@@ -81,6 +111,10 @@ class ServicesListView(QWidget):
         ]
 
     def _match_filter(self, item: dict) -> bool:
+        if self._filter == "disabled":
+            return bool(item.get("disabled"))
+        if item.get("disabled"):
+            return False
         if self._filter == "ok":
             return HomePageLogic.is_ok(item)
         return HomePageLogic.is_bad(item)
@@ -89,28 +123,60 @@ class ServicesListView(QWidget):
         items = self.filtered_items()
         self.count_label.setText(f"共 {len(items)} 个")
         self.table.setRowCount(len(items))
+        # 每次渲染后重新钉死列宽，避免 Stretch 挤掉操作列
+        self.table.setColumnWidth(0, 240)
+        self.table.setColumnWidth(5, 200)
         for row, item in enumerate(items):
             svc = item.get("service", {})
             status = item.get("status", {})
             running = status.get("running")
             health = status.get("health_ok")
-            self.table.setItem(row, 0, QTableWidgetItem(svc.get("name") or svc.get("id", "")))
-            self.table.setItem(row, 1, QTableWidgetItem(str(svc.get("type", ""))))
-            self.table.setItem(
-                row,
-                2,
-                QTableWidgetItem(
-                    "运行中" if running else "已停止" if running is False else "未知"
-                ),
-            )
+            name = svc.get("name") or svc.get("id", "")
+            self.table.setItem(row, 0, make_text_item(name, tooltip=name))
+            self.table.setItem(row, 1, make_text_item(str(svc.get("type", ""))))
+            if item.get("disabled"):
+                running_text = "未检测"
+            else:
+                running_text = "运行中" if running else "已停止" if running is False else "未知"
+            self.table.setItem(row, 2, make_text_item(running_text))
             health_text = "正常" if health is True else "异常" if health is False else "未检测"
-            self.table.setItem(row, 3, QTableWidgetItem(health_text))
-            self.table.setItem(row, 4, QTableWidgetItem(status.get("detail", "")))
+            self.table.setItem(row, 3, make_text_item(health_text))
+            detail = status.get("detail", "") or ""
+            self.table.setItem(row, 4, make_text_item(detail, tooltip=detail))
+
+            self.table.setRowHeight(row, 46)
+            if item.get("disabled"):
+                service_id = svc.get("id", "")
+                actions = QWidget()
+                actions.setAutoFillBackground(False)
+                actions_layout = QHBoxLayout(actions)
+                actions_layout.setContentsMargins(6, 4, 6, 4)
+                actions_layout.setSpacing(6)
+                enable_btn = QPushButton("启用巡检")
+                enable_btn.setObjectName("tableActionButton")
+                enable_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+                enable_btn.clicked.connect(
+                    lambda _checked=False, sid=service_id: self.enable_service.emit(sid)
+                )
+                remove_btn = QPushButton("移除")
+                remove_btn.setObjectName("tableActionButtonDanger")
+                remove_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+                remove_btn.clicked.connect(
+                    lambda _checked=False, sid=service_id: self.remove_service.emit(sid)
+                )
+                actions_layout.addWidget(enable_btn)
+                actions_layout.addWidget(remove_btn)
+                self.table.setCellWidget(row, 5, actions)
+            else:
+                self.table.removeCellWidget(row, 5)
+                self.table.setItem(row, 5, QTableWidgetItem(""))
 
 
 class HomePageLogic:
     @staticmethod
     def is_ok(item: dict) -> bool:
+        if item.get("disabled"):
+            return False
         status = item.get("status", {})
         if status.get("running") is not True:
             return False
@@ -120,6 +186,8 @@ class HomePageLogic:
 
     @staticmethod
     def is_bad(item: dict) -> bool:
+        if item.get("disabled"):
+            return False
         status = item.get("status", {})
         running = status.get("running")
         if running is None:

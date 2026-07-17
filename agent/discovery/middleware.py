@@ -3,8 +3,7 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING
 
-from agent.executor.middleware_probe import probe_middleware_process
-from agent.executor.systemd_probe import probe_systemd_unit
+from agent.executor.middleware_probe import _MIDDLEWARE_PATTERNS
 from agent.models import DiscoveredService, ServiceType
 
 if TYPE_CHECKING:
@@ -14,25 +13,56 @@ _MIDDLEWARE_HINTS = ("nginx", "redis", "mysql", "mariadb", "postgres", "rabbitmq
 
 
 async def detect_middleware(executor: SSHRemoteExecutor, host_id: str) -> list[DiscoveredService]:
+    """Detect middleware via systemd units + process table in 3 SSH round trips.
+
+    以前逐 unit 调 systemctl show / is-active（每个 unit 6+ 次往返），跳板机上非常慢；
+    现在直接解析 list-units --all 的状态列，并复用一次 ps 输出做进程匹配。
+    """
     services: list[DiscoveredService] = []
     seen_ids: set[str] = set()
 
-    units = await executor.run("systemctl list-units --type=service --state=running --no-pager --no-legend")
+    # --all：包含 inactive/failed 的 unit，探测未运行的中间件
+    units = await executor.run(
+        "systemctl list-units --type=service --all --no-pager --no-legend --plain 2>/dev/null || true",
+        timeout=30,
+    )
+    ps = await executor.run("ps -eo pid,cmd 2>/dev/null | grep -v grep || true", timeout=30)
+    ps_lines: list[tuple[int, str]] = []
+    for line in ps.stdout.splitlines():
+        parts = line.strip().split(None, 1)
+        if parts and parts[0].isdigit():
+            ps_lines.append((int(parts[0]), parts[1] if len(parts) > 1 else ""))
+
+    def _match_process(service_id: str) -> tuple[int | None, str]:
+        pattern = _MIDDLEWARE_PATTERNS.get(service_id.lower())
+        if not pattern:
+            for key, regex in _MIDDLEWARE_PATTERNS.items():
+                if key in service_id.lower():
+                    pattern = regex
+                    break
+        if not pattern:
+            return None, ""
+        for pid, cmd in ps_lines:
+            if pattern.search(cmd):
+                return pid, cmd
+        return None, ""
+
     for line in units.stdout.splitlines():
         line = line.strip()
         if not line:
             continue
-        unit = line.split()[0]
+        cols = line.split(None, 4)
+        if len(cols) < 3:
+            continue
+        unit, _load, active = cols[0], cols[1], cols[2]
+        sub = cols[3] if len(cols) > 3 else ""
         lowered = unit.lower()
         if not any(hint in lowered for hint in _MIDDLEWARE_HINTS):
             continue
+        running = active == "active"
         suggested_id = re.sub(r"\.service$", "", unit)
-        probe = await probe_systemd_unit(executor, unit)
-        process_probe = await probe_middleware_process(executor, suggested_id)
-        pid = probe.get("main_pid") or (
-            process_probe["matches"][0]["pid"] if process_probe.get("matches") else None
-        )
-        confidence = 0.85 if probe["running"] and pid else 0.75 if probe["running"] else 0.65
+        pid, proc_cmd = _match_process(suggested_id) if running else (None, "")
+        confidence = 0.85 if running and pid else 0.75 if running else 0.6
         services.append(
             DiscoveredService(
                 suggested_id=suggested_id,
@@ -42,23 +72,24 @@ async def detect_middleware(executor: SSHRemoteExecutor, host_id: str) -> list[D
                 pid=pid,
                 systemd_unit=unit if unit.endswith(".service") else f"{unit}.service",
                 confidence=confidence,
+                running=running,
                 evidence={
                     "source": "systemd",
                     "unit": unit,
-                    "systemd_detail": probe["detail"],
-                    "process_detail": process_probe["detail"],
+                    "state": f"{active}/{sub}",
+                    "process_detail": proc_cmd[:160],
                 },
             )
         )
         seen_ids.add(suggested_id)
 
+    # 没被 systemd 管理但进程在跑的中间件
     for hint in _MIDDLEWARE_HINTS:
         if hint in seen_ids:
             continue
-        process_probe = await probe_middleware_process(executor, hint)
-        if not process_probe["running"]:
+        pid, proc_cmd = _match_process(hint)
+        if pid is None:
             continue
-        pid = process_probe["matches"][0]["pid"] if process_probe.get("matches") else None
         services.append(
             DiscoveredService(
                 suggested_id=hint,
@@ -66,14 +97,16 @@ async def detect_middleware(executor: SSHRemoteExecutor, host_id: str) -> list[D
                 host_id=host_id,
                 service_type=ServiceType.MIDDLEWARE,
                 pid=pid,
-                confidence=0.8 if pid else 0.7,
-                evidence={"source": "process", "detail": process_probe["detail"]},
+                confidence=0.8,
+                running=True,
+                evidence={"source": "process", "detail": proc_cmd[:160]},
             )
         )
         seen_ids.add(hint)
 
     docker = await executor.run(
-        "docker ps --format '{{.Names}}|{{.Image}}' 2>/dev/null | grep -Ei 'nginx|redis|mysql|postgres|kafka' || true"
+        "docker ps --format '{{.Names}}|{{.Image}}' 2>/dev/null | grep -Ei 'nginx|redis|mysql|postgres|kafka' || true",
+        timeout=20,
     )
     for line in docker.stdout.splitlines():
         if "|" not in line:
@@ -89,6 +122,7 @@ async def detect_middleware(executor: SSHRemoteExecutor, host_id: str) -> list[D
                 service_type=ServiceType.MIDDLEWARE,
                 container_name=name,
                 confidence=0.75,
+                running=True,
                 evidence={"source": "docker middleware", "image": image},
             )
         )
