@@ -4,6 +4,8 @@
 
 **SteadyOps** 是一款面向企业内网的 Linux 服务运维 Agent，部署在 **Windows 跳板机**上，通过 SSH 远程管理 Linux 主机上的 Java、Docker、Compose 与中间件服务。它集 **自动发现、持续巡检、智能告警、AI 对话诊断** 于一体，支持桌面应用与 Web 控制台两种形态，并可对接飞书机器人。
 
+版本历史见 [CHANGELOG.md](CHANGELOG.md)。
+
 ---
 
 ## 产品简介

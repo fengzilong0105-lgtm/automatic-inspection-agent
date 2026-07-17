@@ -195,7 +195,7 @@ def _auth_dependency(
 
 
 def create_app() -> FastAPI:
-    app = FastAPI(title="Automatic Inspection Agent", version="0.1.0")
+    app = FastAPI(title="Automatic Inspection Agent", version="0.2.0")
     chat_agent = ChatAgent()
     orchestrator = ActionOrchestrator()
     write_orchestrator = WriteOrchestrator()
