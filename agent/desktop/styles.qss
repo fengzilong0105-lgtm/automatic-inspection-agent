@@ -557,3 +557,139 @@ QScrollBar::handle:horizontal {
     border-radius: 4px;
     min-width: 24px;
 }
+
+/* ---- Service summary strip ---- */
+QLabel#serviceStripTitle {
+    color: #262626;
+    font-size: 13px;
+    font-weight: 600;
+    padding-right: 4px;
+}
+
+QLabel#serviceChip {
+    color: #595959;
+    background-color: #F5F7FA;
+    border: 1px solid #E8ECF0;
+    border-radius: 4px;
+    padding: 2px 10px;
+    font-size: 12px;
+    font-weight: 500;
+}
+
+QLabel#serviceChip[accent="success"] {
+    color: #389E0D;
+    background-color: #F6FFED;
+    border-color: #B7EB8F;
+}
+
+QLabel#serviceChip[accent="danger"] {
+    color: #CF1322;
+    background-color: #FFF2F0;
+    border-color: #FFCCC7;
+}
+
+QPushButton#alertButtonCompact {
+    background-color: #FFF2F0;
+    border: 1px solid #FF7875;
+    color: #CF1322;
+    font-weight: 600;
+    font-size: 12px;
+    min-height: 28px;
+    max-height: 28px;
+    padding: 0 12px;
+}
+
+QPushButton#alertButtonCompact:hover {
+    background-color: #FF4D4F;
+    border-color: #FF4D4F;
+    color: #FFFFFF;
+}
+
+/* ---- Host metrics bar ---- */
+QLabel#metricsCellTitle {
+    color: #8C8C8C;
+    font-size: 12px;
+}
+
+QLabel#metricsCellValue {
+    color: #262626;
+    font-size: 14px;
+    font-weight: 600;
+}
+
+QLabel#metricsCellValue[level="warn"] {
+    color: #D48806;
+}
+
+QLabel#metricsCellValue[level="danger"] {
+    color: #CF1322;
+}
+
+QLabel#metricsCellHint {
+    color: #8C8C8C;
+    font-size: 11px;
+}
+
+QLabel#metricsStatus {
+    color: #8C8C8C;
+    font-size: 11px;
+    max-width: 220px;
+}
+
+QPushButton#metricsToggle {
+    background: transparent;
+    border: none;
+    color: #1890FF;
+    font-size: 12px;
+    padding: 0 4px;
+    min-height: 22px;
+}
+
+QPushButton#metricsToggle:hover {
+    color: #40A9FF;
+}
+
+QPushButton#metricsToggle:disabled {
+    color: #BFBFBF;
+}
+
+QProgressBar#metricsBar {
+    background-color: #F0F2F5;
+    border: none;
+    border-radius: 4px;
+}
+
+QProgressBar#metricsBar::chunk {
+    background-color: #52C41A;
+    border-radius: 4px;
+}
+
+QProgressBar#metricsBar[level="warn"]::chunk {
+    background-color: #FAAD14;
+}
+
+QProgressBar#metricsBar[level="danger"]::chunk {
+    background-color: #FF4D4F;
+}
+
+QTabWidget#metricsTabs::pane {
+    border: 1px solid #E8ECF0;
+    border-radius: 6px;
+    top: -1px;
+    background: #FFFFFF;
+}
+
+QTabWidget#metricsTabs QTabBar::tab {
+    background: transparent;
+    color: #8C8C8C;
+    padding: 6px 12px;
+    margin-right: 2px;
+    border: none;
+}
+
+QTabWidget#metricsTabs QTabBar::tab:selected {
+    color: #1890FF;
+    font-weight: 600;
+    border-bottom: 2px solid #1890FF;
+}
+

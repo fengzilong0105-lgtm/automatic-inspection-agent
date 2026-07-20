@@ -22,6 +22,7 @@ from agent.models import (
     FileDownloadResult,
     HostConfig,
     HostMetrics,
+    ProcessTopEntry,
     ServiceConfig,
     ServiceStatus,
     ServiceType,
@@ -328,42 +329,131 @@ class SSHRemoteExecutor:
                 return fallback
         return metrics
 
+    async def get_process_top(
+        self, limit: int = 5
+    ) -> tuple[list[ProcessTopEntry], list[ProcessTopEntry]]:
+        limit = max(1, min(int(limit), 20))
+        top_cpu, top_mem = await self._get_process_top_psutil(limit)
+        if not top_cpu and not top_mem:
+            return await self._get_process_top_ps_fallback(limit)
+        return top_cpu, top_mem
+
+    def _parse_metrics_payload(self, raw: str, stderr: str = "") -> HostMetrics:
+        import json
+
+        from agent.models import DiskMount
+
+        metrics = HostMetrics(host_id=self.host_id, detail=raw or stderr)
+        if not raw:
+            return metrics
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            metrics.detail = raw
+            return metrics
+
+        metrics.cpu_percent = data.get("cpu_percent")
+        metrics.memory_percent = data.get("memory_percent")
+        metrics.memory_used_bytes = data.get("memory_used_bytes")
+        metrics.memory_total_bytes = data.get("memory_total_bytes")
+        metrics.load_avg = data.get("load_avg")
+        metrics.detail = data.get("detail", "") or ""
+
+        disks: list[DiskMount] = []
+        for item in data.get("disks") or []:
+            try:
+                disks.append(DiskMount.model_validate(item))
+            except Exception:
+                continue
+        metrics.disks = disks
+
+        fullest = None
+        for disk in disks:
+            if disk.percent is None:
+                continue
+            if fullest is None or (disk.percent or 0) > (fullest.percent or 0):
+                fullest = disk
+        if fullest is not None:
+            metrics.disk_percent = fullest.percent
+            metrics.disk_mount = fullest.mount
+        else:
+            metrics.disk_percent = data.get("disk_percent")
+            metrics.disk_mount = data.get("disk_mount") or "/"
+        return metrics
+
+    @staticmethod
+    def _parse_process_top_payload(
+        raw: str, limit: int
+    ) -> tuple[list[ProcessTopEntry], list[ProcessTopEntry]]:
+        import json
+
+        if not raw:
+            return [], []
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            return [], []
+
+        def _parse_list(key: str) -> list[ProcessTopEntry]:
+            rows: list[ProcessTopEntry] = []
+            for item in data.get(key) or []:
+                try:
+                    rows.append(ProcessTopEntry.model_validate(item))
+                except Exception:
+                    continue
+                if len(rows) >= limit:
+                    break
+            return rows
+
+        return _parse_list("top_cpu"), _parse_list("top_memory")
+
     async def _get_metrics_psutil(self) -> HostMetrics:
         cmd = (
             "python3 - <<'PY'\n"
             "import json\n"
+            "SKIP={'tmpfs','devtmpfs','squashfs','overlay','proc','sysfs','devpts',"
+            "'cgroup','cgroup2','pstore','bpf','tracefs','debugfs','securityfs',"
+            "'hugetlbfs','mqueue','rpc_pipefs','configfs','fusectl','binfmt_misc',"
+            "'autofs','efivarfs','nsfs','ramfs'}\n"
             "try:\n"
             " import psutil\n"
             " vm=psutil.virtual_memory()\n"
-            " du=psutil.disk_usage('/')\n"
             " load=' '.join(map(str, psutil.getloadavg())) if hasattr(psutil,'getloadavg') else ''\n"
+            " disks=[]\n"
+            " seen=set()\n"
+            " for p in psutil.disk_partitions(all=False):\n"
+            "  ft=(p.fstype or '').lower()\n"
+            "  if ft in SKIP or not p.mountpoint or p.mountpoint in seen: continue\n"
+            "  try:\n"
+            "   u=psutil.disk_usage(p.mountpoint)\n"
+            "  except Exception:\n"
+            "   continue\n"
+            "  seen.add(p.mountpoint)\n"
+            "  disks.append({'mount':p.mountpoint,'percent':round(u.percent,1),"
+            "'used_bytes':int(u.used),'total_bytes':int(u.total),'fstype':p.fstype or ''})\n"
+            " if not disks:\n"
+            "  u=psutil.disk_usage('/')\n"
+            "  disks=[{'mount':'/','percent':round(u.percent,1),'used_bytes':int(u.used),"
+            "'total_bytes':int(u.total),'fstype':''}]\n"
             " print(json.dumps({'cpu_percent': psutil.cpu_percent(interval=0.5),"
-            " 'memory_percent': vm.percent, 'disk_percent': du.percent, 'load_avg': load}))\n"
+            " 'memory_percent': vm.percent, 'memory_used_bytes': int(vm.used),"
+            " 'memory_total_bytes': int(vm.total), 'load_avg': load, 'disks': disks}))\n"
             "except Exception as e:\n"
             " print(json.dumps({'detail': str(e)}))\n"
             "PY"
         )
         result = await self.run(cmd, timeout=30)
-        metrics = HostMetrics(host_id=self.host_id, detail=result.stdout or result.stderr)
-        if result.stdout:
-            import json
-
-            try:
-                data = json.loads(result.stdout)
-                metrics.cpu_percent = data.get("cpu_percent")
-                metrics.memory_percent = data.get("memory_percent")
-                metrics.disk_percent = data.get("disk_percent")
-                metrics.load_avg = data.get("load_avg")
-                metrics.detail = data.get("detail", "")
-            except json.JSONDecodeError:
-                metrics.detail = result.stdout
-        return metrics
+        return self._parse_metrics_payload(result.stdout or "", result.stderr or "")
 
     async def _get_metrics_proc_fallback(self) -> HostMetrics:
         """Collect host metrics via /proc + free + df when psutil is unavailable."""
         cmd = (
             "python3 - <<'PY'\n"
             "import json, time, subprocess\n"
+            "SKIP={'tmpfs','devtmpfs','squashfs','overlay','proc','sysfs','devpts',"
+            "'cgroup','cgroup2','pstore','bpf','tracefs','debugfs','securityfs',"
+            "'hugetlbfs','mqueue','rpc_pipefs','configfs','fusectl','binfmt_misc',"
+            "'autofs','efivarfs','nsfs','ramfs'}\n"
             "def cpu_pct():\n"
             "    def snap():\n"
             "        parts = open('/proc/stat').readline().split()[1:]\n"
@@ -375,31 +465,104 @@ class SSHRemoteExecutor:
             "load = open('/proc/loadavg').read().split()[:3]\n"
             "mem = subprocess.check_output(['free', '-b'], text=True).splitlines()[1].split()\n"
             "mem_total, mem_used = int(mem[1]), int(mem[2])\n"
-            "disk = subprocess.check_output(['df', '-P', '/'], text=True).splitlines()[1].split()\n"
+            "disks=[]; seen=set()\n"
+            "for line in subprocess.check_output(['df','-PT'], text=True).splitlines()[1:]:\n"
+            "    parts=line.split()\n"
+            "    if len(parts)<7: continue\n"
+            "    fstype=parts[1].lower(); mount=parts[6]\n"
+            "    if fstype in SKIP or mount in seen: continue\n"
+            "    try:\n"
+            "        pct=float(parts[5].rstrip('%')); total=int(parts[2])*1024; used=int(parts[3])*1024\n"
+            "    except Exception:\n"
+            "        continue\n"
+            "    seen.add(mount)\n"
+            "    disks.append({'mount':mount,'percent':pct,'used_bytes':used,'total_bytes':total,'fstype':parts[1]})\n"
+            "if not disks:\n"
+            "    disk=subprocess.check_output(['df','-P','/'], text=True).splitlines()[1].split()\n"
+            "    disks=[{'mount':'/','percent':float(disk[4].rstrip('%')),"
+            "'used_bytes':int(disk[2])*1024,'total_bytes':int(disk[1])*1024,'fstype':''}]\n"
             "print(json.dumps({\n"
             "    'cpu_percent': cpu_pct(),\n"
             "    'memory_percent': round(mem_used / mem_total * 100, 1) if mem_total else None,\n"
-            "    'disk_percent': float(disk[4].rstrip('%')) if len(disk) > 4 else None,\n"
+            "    'memory_used_bytes': mem_used,\n"
+            "    'memory_total_bytes': mem_total,\n"
             "    'load_avg': ' '.join(load),\n"
+            "    'disks': disks,\n"
             "    'detail': 'fallback:/proc+free+df (psutil unavailable)',\n"
             "}))\n"
             "PY"
         )
         result = await self.run(cmd, timeout=35)
-        metrics = HostMetrics(host_id=self.host_id, detail=result.stdout or result.stderr)
-        if result.stdout:
-            import json
+        return self._parse_metrics_payload(result.stdout or "", result.stderr or "")
 
-            try:
-                data = json.loads(result.stdout)
-                metrics.cpu_percent = data.get("cpu_percent")
-                metrics.memory_percent = data.get("memory_percent")
-                metrics.disk_percent = data.get("disk_percent")
-                metrics.load_avg = data.get("load_avg")
-                metrics.detail = data.get("detail", "")
-            except json.JSONDecodeError:
-                metrics.detail = result.stdout
-        return metrics
+    async def _get_process_top_psutil(
+        self, limit: int
+    ) -> tuple[list[ProcessTopEntry], list[ProcessTopEntry]]:
+        cmd = (
+            "python3 - <<'PY'\n"
+            f"LIMIT={limit}\n"
+            "import json\n"
+            "try:\n"
+            " import psutil, time\n"
+            " procs=[]\n"
+            " for p in psutil.process_iter(['pid','name','username']):\n"
+            "  try:\n"
+            "   p.cpu_percent(None)\n"
+            "   procs.append(p)\n"
+            "  except Exception:\n"
+            "   pass\n"
+            " time.sleep(0.4)\n"
+            " rows=[]\n"
+            " for p in procs:\n"
+            "  try:\n"
+            "   with p.oneshot():\n"
+            "    info=p.as_dict(attrs=['pid','name','username','memory_percent','memory_info'])\n"
+            "    cpu=p.cpu_percent(None)\n"
+            "   mi=info.get('memory_info')\n"
+            "   rows.append({'pid':info['pid'],'name':info.get('name') or '',"
+            "'user':info.get('username') or '','cpu_percent':round(float(cpu or 0),1),"
+            "'memory_percent':round(float(info.get('memory_percent') or 0),1),"
+            "'rss_bytes':int(getattr(mi,'rss',0) or 0)})\n"
+            "  except Exception:\n"
+            "   pass\n"
+            " top_cpu=sorted(rows,key=lambda r:r['cpu_percent'],reverse=True)[:LIMIT]\n"
+            " top_memory=sorted(rows,key=lambda r:r['rss_bytes'],reverse=True)[:LIMIT]\n"
+            " print(json.dumps({'top_cpu':top_cpu,'top_memory':top_memory}))\n"
+            "except Exception as e:\n"
+            " print(json.dumps({'detail':str(e),'top_cpu':[],'top_memory':[]}))\n"
+            "PY"
+        )
+        result = await self.run(cmd, timeout=30)
+        return self._parse_process_top_payload(result.stdout or "", limit)
+
+    async def _get_process_top_ps_fallback(
+        self, limit: int
+    ) -> tuple[list[ProcessTopEntry], list[ProcessTopEntry]]:
+        cmd = (
+            "python3 - <<'PY'\n"
+            f"LIMIT={limit}\n"
+            "import json, subprocess\n"
+            "def parse(sort_key):\n"
+            "    out=subprocess.check_output(\n"
+            "        ['ps','-eo','pid=,user=,pcpu=,pmem=,rss=,comm=','--sort='+sort_key],\n"
+            "        text=True, errors='ignore')\n"
+            "    rows=[]\n"
+            "    for line in out.splitlines():\n"
+            "        parts=line.split(None,5)\n"
+            "        if len(parts)<6: continue\n"
+            "        try:\n"
+            "            rows.append({'pid':int(parts[0]),'user':parts[1],"
+            "'cpu_percent':float(parts[2]),'memory_percent':float(parts[3]),"
+            "'rss_bytes':int(parts[4])*1024,'name':parts[5]})\n"
+            "        except Exception:\n"
+            "            continue\n"
+            "        if len(rows)>=LIMIT: break\n"
+            "    return rows\n"
+            "print(json.dumps({'top_cpu':parse('-pcpu'),'top_memory':parse('-rss')}))\n"
+            "PY"
+        )
+        result = await self.run(cmd, timeout=20)
+        return self._parse_process_top_payload(result.stdout or "", limit)
 
     async def service_status(
         self, service: ServiceConfig, java_process_index: list[dict] | None = None

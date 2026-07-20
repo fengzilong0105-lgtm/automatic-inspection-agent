@@ -212,12 +212,33 @@ class ServiceStatus(BaseModel):
     checked_at: datetime = Field(default_factory=datetime.utcnow)
 
 
+class DiskMount(BaseModel):
+    mount: str
+    percent: float | None = None
+    used_bytes: int | None = None
+    total_bytes: int | None = None
+    fstype: str = ""
+
+
+class ProcessTopEntry(BaseModel):
+    pid: int
+    name: str
+    user: str = ""
+    cpu_percent: float | None = None
+    memory_percent: float | None = None
+    rss_bytes: int | None = None
+
+
 class HostMetrics(BaseModel):
     host_id: str
     cpu_percent: float | None = None
     memory_percent: float | None = None
+    memory_used_bytes: int | None = None
+    memory_total_bytes: int | None = None
     disk_percent: float | None = None
+    disk_mount: str | None = None
     load_avg: str | None = None
+    disks: list[DiskMount] = Field(default_factory=list)
     detail: str = ""
 
 

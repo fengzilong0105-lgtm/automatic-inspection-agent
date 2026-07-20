@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMessageBox,
     QPushButton,
-    QSizePolicy,
     QStackedWidget,
     QVBoxLayout,
     QWidget,
@@ -16,8 +15,29 @@ from agent.desktop.async_call import AsyncCall
 from agent.desktop.pages.services_list_view import HomePageLogic, ServicesListView
 from agent.desktop.widgets.card import Card
 from agent.desktop.widgets.chat_panel import ChatPanel
-from agent.desktop.widgets.stat_card import ClickableStatCard
+from agent.desktop.widgets.host_metrics_bar import HostMetricsBar
 from agent.services.agent_service import AgentService
+
+
+class _ServiceChip(QLabel):
+    clicked = Signal()
+
+    def __init__(self, text: str = "", *, accent: str = "default", parent=None) -> None:
+        super().__init__(text, parent)
+        self.setObjectName("serviceChip")
+        self.setProperty("accent", accent)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
+
+    def mousePressEvent(self, event) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit()
+        super().mousePressEvent(event)
+
+    def set_accent(self, accent: str) -> None:
+        self.setProperty("accent", accent)
+        self.style().unpolish(self)
+        self.style().polish(self)
 
 
 class HomePage(QWidget):
@@ -37,7 +57,7 @@ class HomePage(QWidget):
         self.stack = QStackedWidget()
         self.overview = self._build_overview()
         self.services_view = ServicesListView()
-        self.services_view.back_btn.clicked.connect(lambda: self.stack.setCurrentIndex(0))
+        self.services_view.back_btn.clicked.connect(self._back_to_overview)
         self.services_view.enable_service.connect(self._enable_service)
         self.services_view.remove_service.connect(self._remove_service)
         self.stack.addWidget(self.overview)
@@ -52,45 +72,43 @@ class HomePage(QWidget):
         page = QWidget()
         layout = QVBoxLayout(page)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(12)
+        layout.setSpacing(10)
 
-        overview_card = Card()
-        overview_layout = overview_card.content_layout
+        summary_card = Card(padding=8)
+        summary_layout = summary_card.content_layout
+        summary_layout.setSpacing(6)
 
-        head = QHBoxLayout()
-        title = QLabel("服务概览")
-        title.setObjectName("sectionTitle")
-        self.host_hint = QLabel("")
-        self.host_hint.setObjectName("fieldLabel")
-        head.addWidget(title)
-        head.addWidget(self.host_hint)
-        head.addStretch()
-        overview_layout.addLayout(head)
+        row = QHBoxLayout()
+        row.setSpacing(10)
 
-        stats_row = QHBoxLayout()
-        stats_row.setSpacing(12)
-        self.card_ok = ClickableStatCard("正常服务", "0", hint="点击查看列表", accent="success")
-        self.card_bad = ClickableStatCard("异常服务", "0", hint="点击查看列表", accent="danger")
-        self.card_disabled = ClickableStatCard("停用巡检", "0", hint="点击查看/启用")
-        self.card_ok.clicked.connect(lambda: self._open_service_list("ok"))
-        self.card_bad.clicked.connect(lambda: self._open_service_list("bad"))
-        self.card_disabled.clicked.connect(lambda: self._open_service_list("disabled"))
-        self.incidents_btn = QPushButton("告警记录")
-        self.incidents_btn.setObjectName("alertButton")
-        self.incidents_btn.setMinimumWidth(108)
-        self.incidents_btn.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
-        self.incidents_btn.clicked.connect(self.go_incidents.emit)
-        stats_row.addWidget(self.card_ok, 1)
-        stats_row.addWidget(self.card_bad, 1)
-        stats_row.addWidget(self.card_disabled, 1)
-        stats_row.addWidget(self.incidents_btn, 0)
-        overview_layout.addLayout(stats_row)
+        self.host_hint = QLabel("服务")
+        self.host_hint.setObjectName("serviceStripTitle")
+        row.addWidget(self.host_hint)
+
+        self.chip_ok = _ServiceChip("正常 0", accent="success")
+        self.chip_bad = _ServiceChip("异常 0", accent="danger")
+        self.chip_disabled = _ServiceChip("停用 0")
+        self.chip_ok.clicked.connect(lambda: self._open_service_list("ok"))
+        self.chip_bad.clicked.connect(lambda: self._open_service_list("bad"))
+        self.chip_disabled.clicked.connect(lambda: self._open_service_list("disabled"))
+        row.addWidget(self.chip_ok)
+        row.addWidget(self.chip_bad)
+        row.addWidget(self.chip_disabled)
 
         self.status_label = QLabel("")
         self.status_label.setObjectName("fieldLabel")
-        overview_layout.addWidget(self.status_label)
+        row.addWidget(self.status_label, 1)
 
-        layout.addWidget(overview_card)
+        self.incidents_btn = QPushButton("告警")
+        self.incidents_btn.setObjectName("alertButtonCompact")
+        self.incidents_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.incidents_btn.clicked.connect(self.go_incidents.emit)
+        row.addWidget(self.incidents_btn)
+        summary_layout.addLayout(row)
+        layout.addWidget(summary_card)
+
+        self.metrics_bar = HostMetricsBar(self.service)
+        layout.addWidget(self.metrics_bar)
 
         chat_card = Card()
         self.chat_panel = ChatPanel(self.service)
@@ -99,25 +117,46 @@ class HomePage(QWidget):
 
         return page
 
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        if self.stack.currentIndex() == 0 and self._host_id:
+            self.metrics_bar.resume()
+
+    def hideEvent(self, event) -> None:
+        self.metrics_bar.pause()
+        super().hideEvent(event)
+
+    def _back_to_overview(self) -> None:
+        self.stack.setCurrentIndex(0)
+        if self._host_id and self.isVisible():
+            self.metrics_bar.resume()
+
     def _open_service_list(self, filter_kind: str) -> None:
+        self.metrics_bar.pause()
         self.services_view.show_list(filter_kind, self.summary)
         self.stack.setCurrentIndex(1)
 
     def set_active_host(self, host_id: str, host_name: str = "") -> None:
         self._host_id = host_id or ""
-        self.host_hint.setText(host_name or "")
+        title = "服务"
+        if host_name:
+            title = f"服务 · {host_name}"
+        self.host_hint.setText(title)
         if self.stack.currentIndex() != 0:
             self.stack.setCurrentIndex(0)
+        self.metrics_bar.set_host(self._host_id)
         if not self._host_id:
             self.clear_summary("请先选择或新建服务器")
             return
         self.refresh()
+        if self.isVisible():
+            self.metrics_bar.resume()
 
     def clear_summary(self, message: str = "") -> None:
         self.summary = []
-        self.card_ok.set_value("0")
-        self.card_bad.set_value("0")
-        self.card_disabled.set_value("0")
+        self.chip_ok.setText("正常 0")
+        self.chip_bad.setText("异常 0")
+        self.chip_disabled.setText("停用 0")
         self.status_label.setText(message or "暂无服务")
 
     def refresh(self) -> None:
@@ -203,15 +242,18 @@ class HomePage(QWidget):
             if not item.get("disabled") and item.get("status", {}).get("running") is None
         )
         total = len(self.summary)
-        self.card_ok.set_value(str(ok))
-        self.card_bad.set_value(str(bad))
-        self.card_disabled.set_value(str(disabled))
-        parts = [f"共 {total} 个服务"]
+        self.chip_ok.setText(f"正常 {ok}")
+        self.chip_bad.setText(f"异常 {bad}")
+        self.chip_disabled.setText(f"停用 {disabled}")
+        self.chip_bad.set_accent("danger" if bad else "default")
+        parts = [f"共 {total} 个"]
         if disabled:
-            parts.append(f"{disabled} 个已停用巡检")
+            parts.append(f"{disabled} 停用")
         if pending:
-            parts.append(f"{pending} 个待检测")
-        self.status_label.setText("，".join(parts))
+            parts.append(f"{pending} 待检测")
+        self.status_label.setText(" · ".join(parts))
 
         if self.stack.currentIndex() == 1:
             self.services_view.show_list(self.services_view._filter, self.summary)
+        elif self.isVisible() and self._host_id:
+            self.metrics_bar.resume()

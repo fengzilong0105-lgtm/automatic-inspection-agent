@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from agent.models import CommandResult, HostMetrics, ServiceConfig, ServiceStatus
+from agent.models import CommandResult, HostMetrics, ProcessTopEntry, ServiceConfig, ServiceStatus
 
 
 class Executor(Protocol):
@@ -21,5 +21,9 @@ class Executor(Protocol):
     async def restart_service(self, service: ServiceConfig) -> CommandResult: ...
 
     async def get_metrics(self) -> HostMetrics: ...
+
+    async def get_process_top(
+        self, limit: int = 5
+    ) -> tuple[list[ProcessTopEntry], list[ProcessTopEntry]]: ...
 
     async def test_connection(self) -> CommandResult: ...

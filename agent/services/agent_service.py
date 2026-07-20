@@ -422,6 +422,24 @@ class AgentService:
 
     # --- status / incidents / inspection ---
 
+    def get_host_resources(self, host_id: str, *, include_top: bool = False) -> Any:
+        return self._run(self._get_host_resources(host_id, include_top=include_top))
+
+    async def _get_host_resources(self, host_id: str, *, include_top: bool = False) -> dict[str, Any]:
+        settings = get_settings()
+        host = settings.get_host(host_id)
+        executor = get_executor_registry().get(host.id, host)
+        metrics = await executor.get_metrics()
+        payload = metrics.model_dump()
+        if include_top:
+            top_cpu, top_memory = await executor.get_process_top(5)
+            payload["top_cpu"] = [item.model_dump() for item in top_cpu]
+            payload["top_memory"] = [item.model_dump() for item in top_memory]
+        else:
+            payload["top_cpu"] = []
+            payload["top_memory"] = []
+        return payload
+
     def status_summary(self, host_id: str | None = None) -> Any:
         return self._run(self._status_summary(host_id))
 
