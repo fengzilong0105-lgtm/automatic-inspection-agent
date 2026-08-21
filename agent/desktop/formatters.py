@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 STATUS_LABELS: dict[str, str] = {
     "open": "未处理",
@@ -49,15 +49,25 @@ def _enum_token(value: object) -> str:
 
 
 def format_datetime(value: object) -> str:
+    """Format stored timestamps for UI.
+
+    Backend stores naive UTC via datetime.utcnow(); display in local timezone
+    so China (UTC+8) sees 09:44 instead of 01:44.
+    """
     if not value:
         return "-"
-    text = str(value).strip()
-    try:
-        normalized = text.replace("Z", "+00:00")
-        dt = datetime.fromisoformat(normalized)
-        return dt.strftime("%Y-%m-%d %H:%M:%S")
-    except ValueError:
-        return text.replace("T", " ")[:19]
+    if isinstance(value, datetime):
+        dt = value
+    else:
+        text = str(value).strip()
+        try:
+            normalized = text.replace("Z", "+00:00")
+            dt = datetime.fromisoformat(normalized)
+        except ValueError:
+            return text.replace("T", " ")[:19]
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone().strftime("%Y-%m-%d %H:%M:%S")
 
 
 def format_incident_status(value: object) -> str:

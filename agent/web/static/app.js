@@ -112,7 +112,15 @@ function dashboard() {
     formatDateTime(value) {
       if (!value) return "-";
       try {
-        const d = new Date(value);
+        // Backend stores naive UTC (utcnow); treat missing offset as UTC.
+        let s = String(value).trim();
+        if (
+          /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(s) &&
+          !/[zZ]|[+-]\d{2}:?\d{2}$/.test(s)
+        ) {
+          s += "Z";
+        }
+        const d = new Date(s);
         if (Number.isNaN(d.getTime())) return String(value);
         return d.toLocaleString("zh-CN", { hour12: false });
       } catch {
