@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -21,7 +22,14 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from agent.config_mgr.setup import FeishuBotSetupPayload, FeishuSetupPayload, LLMSetupPayload, OpsReportFeishuSetupPayload, OpsReportSetupPayload
+from agent.config_mgr.setup import (
+    FeishuBotSetupPayload,
+    FeishuSetupPayload,
+    LLMSetupPayload,
+    OpsReportFeishuSetupPayload,
+    OpsReportSetupPayload,
+    UpdateSetupPayload,
+)
 from agent.desktop.async_call import AsyncCall
 from agent.desktop.constants import UNCHANGED
 from agent.desktop.widgets.card import Card
@@ -37,6 +45,7 @@ class SettingsPage(QWidget):
     def __init__(self, service: AgentService, parent=None) -> None:
         super().__init__(parent)
         self.service = service
+        self._pending_update: dict | None = None
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -265,9 +274,61 @@ class SettingsPage(QWidget):
         memory_card.content_layout.addLayout(memory_form)
         outer.addWidget(memory_card)
 
+        update_card = Card()
+        update_title = QLabel("在线更新")
+        update_title.setObjectName("sectionTitle")
+        update_hint = WordWrapLabel(
+            "配置 version.json 地址后可检查并安装新版本。"
+            "安装包由发布通道提供；升级只覆盖程序目录，不影响 %APPDATA%\\SteadyOps 下的配置与数据。"
+        )
+        update_hint.setObjectName("mutedText")
+        self._update_hint = update_hint
+
+        self.update_enabled = QCheckBox("启用在线更新检查")
+        self.update_check_on_startup = QCheckBox("启动时自动检查")
+        self.update_feed_url = QLineEdit()
+        self.update_feed_url.setPlaceholderText("https://example.com/releases/version.json")
+        style_input(self.update_feed_url)
+        self.update_version_label = QLabel("当前版本: -")
+        self.update_version_label.setObjectName("mutedText")
+        self.update_status = QLabel("")
+        self.update_status.setObjectName("mutedText")
+        self.update_status.setWordWrap(True)
+
+        update_btn_row = QHBoxLayout()
+        self.update_save_btn = QPushButton("保存更新设置")
+        self.update_save_btn.setObjectName("secondaryButton")
+        self.update_check_btn = QPushButton("检查更新")
+        self.update_check_btn.setObjectName("secondaryButton")
+        self.update_apply_btn = QPushButton("下载并安装")
+        self.update_apply_btn.setObjectName("primaryButton")
+        self.update_apply_btn.setEnabled(False)
+        update_btn_row.addWidget(self.update_save_btn)
+        update_btn_row.addWidget(self.update_check_btn)
+        update_btn_row.addWidget(self.update_apply_btn)
+        update_btn_row.addStretch()
+
+        update_box = QVBoxLayout()
+        update_box.setSpacing(12)
+        update_box.setContentsMargins(0, 0, 0, 0)
+        update_box.addWidget(self.update_enabled)
+        update_box.addWidget(self.update_check_on_startup)
+        update_box.addLayout(labeled_field_row("版本源 URL", self.update_feed_url))
+        update_box.addWidget(self.update_version_label)
+        update_box.addLayout(update_btn_row)
+        update_box.addWidget(self.update_status)
+
+        update_card.content_layout.addWidget(update_title)
+        update_card.content_layout.addWidget(update_hint)
+        update_card.content_layout.addLayout(update_box)
+        outer.addWidget(update_card)
+
         save_btn.clicked.connect(self.save_settings)
         test_llm_btn.clicked.connect(self.test_llm)
         test_feishu_btn.clicked.connect(self.test_feishu)
+        self.update_save_btn.clicked.connect(self.save_update_settings)
+        self.update_check_btn.clicked.connect(self.check_update)
+        self.update_apply_btn.clicked.connect(self.apply_update)
         self.memory_refresh_btn.clicked.connect(self.load_memory)
         self.memory_add_btn.clicked.connect(self.add_memory)
         self.memory_delete_btn.clicked.connect(self.delete_memory)
@@ -276,6 +337,10 @@ class SettingsPage(QWidget):
         self._bridge = AsyncCall(self)
         self._bridge.finished.connect(self._on_async_finished)
         self._bridge.failed.connect(lambda msg: self.result.setPlainText(f"错误: {msg}"))
+
+        self._update_bridge = AsyncCall(self)
+        self._update_bridge.finished.connect(self._on_update_async_finished)
+        self._update_bridge.failed.connect(lambda msg: self.update_status.setText(f"错误: {msg}"))
 
         self._memory_bridge = AsyncCall(self)
         self._memory_bridge.finished.connect(self._on_memory_async_finished)
@@ -291,11 +356,13 @@ class SettingsPage(QWidget):
         super().showEvent(event)
         self._bot_hint._sync_height()
         self._ops_hint._sync_height()
+        self._update_hint._sync_height()
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
         self._bot_hint._sync_height()
         self._ops_hint._sync_height()
+        self._update_hint._sync_height()
 
     def load_form(self) -> None:
         data = self.service.setup_form()
@@ -327,6 +394,14 @@ class SettingsPage(QWidget):
         self.ops_bitable_table_id.setText(ops_feishu.get("bitable_table_id", ""))
         self.ops_auto_draft.setChecked(bool(ops_report.get("auto_draft_on_incident")))
         self.ops_auto_publish.setChecked(bool(ops_report.get("auto_publish")))
+
+        update = data.get("update") or {}
+        self.update_enabled.setChecked(bool(update.get("enabled", True)))
+        self.update_check_on_startup.setChecked(bool(update.get("check_on_startup", True)))
+        self.update_feed_url.setText(update.get("feed_url", ""))
+        self.update_version_label.setText(f"当前版本: {update.get('current_version') or '-'}")
+        self.update_apply_btn.setEnabled(False)
+        self._pending_update = None
 
         try:
             memory_settings = self.service.get_memory_settings()
@@ -446,3 +521,88 @@ class SettingsPage(QWidget):
     def test_feishu(self) -> None:
         self.result.setPlainText("发送中…")
         self._bridge.submit(self.service.test_feishu(self._feishu_payload()))
+
+    def offer_update(self, result: dict) -> None:
+        self._pending_update = result
+        message = result.get("message") or ""
+        notes = result.get("notes") or ""
+        self.update_status.setText(f"{message}\n{notes}".strip())
+        self.update_apply_btn.setEnabled(bool(result.get("available")))
+
+    def _update_payload(self) -> UpdateSetupPayload:
+        return UpdateSetupPayload(
+            enabled=self.update_enabled.isChecked(),
+            feed_url=self.update_feed_url.text().strip(),
+            check_on_startup=self.update_check_on_startup.isChecked(),
+        )
+
+    def save_update_settings(self) -> None:
+        self.update_status.setText("保存中…")
+        self._update_bridge.submit(self.service.save_update_settings_async(self._update_payload()))
+
+    def check_update(self) -> None:
+        # Persist feed URL first so check uses the latest value from disk/settings.
+        apply_update = True
+        try:
+            self.service.save_update_settings(self._update_payload())
+        except Exception as exc:
+            self.update_status.setText(f"保存更新设置失败: {exc}")
+            apply_update = False
+        if not apply_update:
+            return
+        self.update_status.setText("正在检查更新…")
+        self.update_apply_btn.setEnabled(False)
+        self._pending_update = None
+        self._update_bridge.submit(self.service.check_for_update())
+
+    def apply_update(self) -> None:
+        if not self._pending_update or not self._pending_update.get("available"):
+            self.update_status.setText("请先检查更新")
+            return
+        remote = self._pending_update.get("remote_version", "")
+        notes = self._pending_update.get("notes") or ""
+        detail = f"将下载并安装 {remote}。\n应用会短暂退出并自动重启。"
+        if notes:
+            detail += f"\n\n更新说明：\n{notes}"
+        reply = QMessageBox.question(
+            self,
+            "确认更新",
+            detail,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        self.update_status.setText("正在下载并准备安装…")
+        self.update_apply_btn.setEnabled(False)
+        self._update_bridge.submit(self.service.apply_update())
+
+    def _on_update_async_finished(self, result) -> None:
+        if isinstance(result, str):
+            self.update_status.setText(result)
+            return
+        if not isinstance(result, dict):
+            self.update_status.setText(str(result))
+            return
+        if not result.get("ok"):
+            self.update_status.setText(result.get("error") or "更新失败")
+            self.update_apply_btn.setEnabled(False)
+            return
+        if result.get("restarting"):
+            self.update_status.setText("安装程序已启动，应用即将退出…")
+            from PySide6.QtWidgets import QApplication
+
+            window = self.window()
+            if hasattr(window, "quit_application"):
+                window.quit_application()
+            else:
+                QApplication.instance().quit()
+            return
+        self._pending_update = result
+        self.update_status.setText(result.get("message") or "")
+        if result.get("notes"):
+            self.update_status.setText(
+                f"{result.get('message')}\n{result.get('notes')}"
+            )
+        self.update_apply_btn.setEnabled(bool(result.get("available")))
+

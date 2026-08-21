@@ -19,8 +19,10 @@ from agent.config_mgr.setup import (
     OpsReportSetupPayload,
     SetupSavePayload,
     SSHSetupPayload,
+    UpdateSetupPayload,
     apply_setup_payload,
     apply_llm_feishu_payload,
+    apply_update_payload,
     test_feishu_config,
     test_llm_config,
     test_ssh_config,
@@ -236,6 +238,61 @@ class AgentService:
     ) -> str:
         await asyncio.to_thread(apply_llm_feishu_payload, llm, feishu, ops_report)
         return "设置已保存"
+
+    def save_update_settings(self, payload: UpdateSetupPayload) -> None:
+        apply_update_payload(payload)
+
+    def save_update_settings_async(self, payload: UpdateSetupPayload):
+        return self._run(self._save_update_settings_async(payload))
+
+    async def _save_update_settings_async(self, payload: UpdateSetupPayload) -> str:
+        await asyncio.to_thread(apply_update_payload, payload)
+        return "更新设置已保存"
+
+    def check_for_update(self):
+        return self._run(self._check_for_update())
+
+    async def _check_for_update(self) -> dict[str, Any]:
+        from agent.updater import UpdateError, check_for_update
+
+        settings = get_settings()
+        feed = settings.config.update.feed_url
+        try:
+            result = await asyncio.to_thread(check_for_update, feed)
+        except UpdateError as exc:
+            return {"ok": False, "error": str(exc)}
+        return {
+            "ok": True,
+            "available": result.available,
+            "current_version": result.current_version,
+            "remote_version": result.remote_version,
+            "url": result.url,
+            "sha256": result.sha256,
+            "notes": result.notes,
+            "message": result.message,
+        }
+
+    def apply_update(self):
+        return self._run(self._apply_update())
+
+    async def _apply_update(self) -> dict[str, Any]:
+        from agent.updater import UpdateError, apply_update
+
+        settings = get_settings()
+        feed = settings.config.update.feed_url
+        try:
+            result = await asyncio.to_thread(apply_update, feed)
+        except UpdateError as exc:
+            return {"ok": False, "error": str(exc)}
+        return {
+            "ok": True,
+            "available": result.available,
+            "current_version": result.current_version,
+            "remote_version": result.remote_version,
+            "message": result.message,
+            "notes": result.notes,
+            "restarting": result.available,
+        }
 
     # --- discovery / services ---
 

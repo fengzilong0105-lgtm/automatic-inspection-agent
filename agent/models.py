@@ -113,6 +113,14 @@ class WebConfig(BaseModel):
     auth_token: str = ""
 
 
+class UpdateConfig(BaseModel):
+    """Scheme B online update: feed_url points to version.json."""
+
+    enabled: bool = True
+    feed_url: str = ""
+    check_on_startup: bool = True
+
+
 class AutonomyConfig(BaseModel):
     max_restart_per_15min: int = 3
     write_allow_all_paths: bool = True
@@ -175,6 +183,7 @@ class AppConfig(BaseModel):
     llm: LLMConfig = Field(default_factory=LLMConfig)
     feishu: FeishuConfig = Field(default_factory=FeishuConfig)
     web: WebConfig = Field(default_factory=WebConfig)
+    update: UpdateConfig = Field(default_factory=UpdateConfig)
     autonomy: AutonomyConfig = Field(default_factory=AutonomyConfig)
     chat: ChatConfig = Field(default_factory=ChatConfig)
     ops_report: OpsReportConfig = Field(default_factory=OpsReportConfig)

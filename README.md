@@ -33,7 +33,7 @@
 
 | 形态 | 入口 | 适用对象 |
 |------|------|----------|
-| **桌面应用（推荐）** | `SteadyOps.exe` 或 `python -m agent.launcher` | 运维人员日常使用 |
+| **桌面应用（推荐）** | 安装包 `SteadyOps-Setup-*.exe`，或开发态 `python -m agent.launcher` | 运维人员日常使用 |
 | **Web 控制台** | `http://localhost:8765` 或 `python -m agent.main` | 开发调试、浏览器访问 |
 | **飞书机器人** | 配置飞书应用后接入 | 告警通知与群内指令 |
 
@@ -111,19 +111,21 @@ ollama pull qwen2.5
 # 或 minimax-m3:cloud 等你实际使用的模型
 ```
 
-### 方式二：桌面 exe（免 Python 环境）
+### 方式二：桌面安装包（免 Python 环境）
 
 开发者在本机构建：
 
 ```powershell
 pip install -e ".[build]"
-.\scripts\build.ps1
-# 产物：dist\SteadyOps.exe
+.\scripts\build.ps1              # 产出 dist\SteadyOps\（onedir）
+.\scripts\build.ps1 -Installer   # 再打出 dist\SteadyOps-Setup-x.y.z.exe（需安装 Inno Setup 6）
 ```
 
-使用者双击 `SteadyOps.exe` 即可运行，无需安装 Python。大模型若选 Ollama，仍需用户自行安装 Ollama。
+- 目录包：可直接运行 `dist\SteadyOps\SteadyOps.exe` 做本地验证  
+- 安装包：发给用户双击安装；默认装到 `%LOCALAPPDATA%\Programs\SteadyOps\`，无需管理员权限  
+- 大模型若选 Ollama，仍需用户自行安装 Ollama  
 
-| 数据 | 路径（打包版） |
+| 数据 | 路径（打包 / 安装版） |
 |------|----------------|
 | 配置文件 | `%APPDATA%\SteadyOps\data\config.yaml` |
 | 告警数据库 | `%APPDATA%\SteadyOps\data\agent.db` |
@@ -423,10 +425,12 @@ agent/
 | 大模型 | Ollama / OpenAI 兼容 API |
 | 远程执行 | asyncssh |
 | 存储 | SQLite（aiosqlite）+ YAML 配置 |
-| 打包 | PyInstaller |
+| 打包 | PyInstaller（onedir）+ Inno Setup |
 
 ### 相关文档
 
+- [桌面端交付形态改造方案](docs/desktop-delivery-roadmap.md)
+- [发布通道与在线更新](releases/README.md)
 - [飞书机器人接入](docs/feishu-bot-setup.md)
 - [问题报告与飞书工单工作流](docs/ops-report-workflow.md)
 - [上下文管理机制](docs/context-management.md)

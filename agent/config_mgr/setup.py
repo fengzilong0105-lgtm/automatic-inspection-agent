@@ -13,6 +13,7 @@ from agent.models import (
     OpsReportConfig,
     OpsReportFeishuConfig,
     SSHConfig,
+    UpdateConfig,
 )
 from agent.settings import UNCHANGED_SECRET, get_settings
 
@@ -70,6 +71,12 @@ class OpsReportSetupPayload(BaseModel):
     auto_publish: bool = False
     initiator_default: str = "运维值班"
     feishu: OpsReportFeishuSetupPayload = Field(default_factory=OpsReportFeishuSetupPayload)
+
+
+class UpdateSetupPayload(BaseModel):
+    enabled: bool = True
+    feed_url: str = ""
+    check_on_startup: bool = True
 
 
 class SetupSavePayload(BaseModel):
@@ -236,6 +243,21 @@ def apply_llm_feishu_payload(
         from agent.feishu.runner import schedule_feishu_bot_restart
 
         schedule_feishu_bot_restart()
+
+
+def apply_update_payload(payload: UpdateSetupPayload) -> None:
+    settings = get_settings()
+    config = settings.config
+    updated = config.model_copy(
+        update={
+            "update": UpdateConfig(
+                enabled=payload.enabled,
+                feed_url=payload.feed_url.strip(),
+                check_on_startup=payload.check_on_startup,
+            )
+        }
+    )
+    settings.save(updated)
 
 
 async def test_ssh_config(ssh: SSHSetupPayload, existing: HostConfig | None = None) -> dict[str, Any]:

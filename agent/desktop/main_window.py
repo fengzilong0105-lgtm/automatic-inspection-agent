@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
     QApplication,
     QHBoxLayout,
     QMainWindow,
+    QMessageBox,
     QStackedWidget,
     QStatusBar,
     QVBoxLayout,
@@ -13,6 +14,7 @@ from PySide6.QtWidgets import (
 )
 
 from agent.desktop.assets import load_app_icon
+from agent.desktop.async_call import AsyncCall
 from agent.desktop.pages.cases_page import CasesPage
 from agent.desktop.pages.home_page import HomePage
 from agent.desktop.pages.incidents_page import IncidentsPage
@@ -22,6 +24,8 @@ from agent.desktop.widgets.top_bar import TopBar
 from agent.desktop.widgets.tray import TrayController
 from agent.brand import PRODUCT_NAME
 from agent.services.agent_service import AgentService
+from agent.settings import get_settings
+from agent.version import get_app_version
 
 
 class MainWindow(QMainWindow):
@@ -30,11 +34,15 @@ class MainWindow(QMainWindow):
         self.service = service
         self._force_quit = False
         self._tray_hint_shown = False
-        self.setWindowTitle(PRODUCT_NAME)
+        self.setWindowTitle(f"{PRODUCT_NAME}  v{get_app_version()}")
         app_icon = load_app_icon()
         if not app_icon.isNull():
             self.setWindowIcon(app_icon)
         self.resize(1280, 800)
+
+        self._update_bridge = AsyncCall(self)
+        self._update_bridge.finished.connect(self._on_startup_update_checked)
+        self._update_bridge.failed.connect(lambda _msg: None)
 
         self.tray = TrayController(app_icon, self)
         self.tray.show_requested.connect(self.show_from_tray)
@@ -90,6 +98,35 @@ class MainWindow(QMainWindow):
 
         self.reload_hosts()
         self._update_setup_ui()
+        QTimer.singleShot(3000, self._maybe_check_update_on_startup)
+
+    def _maybe_check_update_on_startup(self) -> None:
+        cfg = get_settings().config.update
+        if not cfg.enabled or not cfg.check_on_startup or not cfg.feed_url.strip():
+            return
+        self.status.showMessage("正在检查更新…", 3000)
+        self._update_bridge.submit(self.service.check_for_update())
+
+    def _on_startup_update_checked(self, result: object) -> None:
+        if not isinstance(result, dict) or not result.get("ok"):
+            return
+        if not result.get("available"):
+            return
+        remote = result.get("remote_version", "")
+        notes = (result.get("notes") or "").strip()
+        text = f"发现新版本 {remote}。是否前往「设置 → 在线更新」安装？"
+        if notes:
+            text += f"\n\n{notes}"
+        reply = QMessageBox.information(
+            self,
+            "发现更新",
+            text,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            self._on_page_changed(3)
+            self.settings_page.offer_update(result)
 
     def _update_setup_ui(self) -> None:
         status = self.service.setup_status()

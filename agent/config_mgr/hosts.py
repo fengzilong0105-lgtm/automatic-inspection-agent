@@ -18,28 +18,36 @@ def host_to_safe_dict(host: HostConfig) -> dict:
     return data
 
 
+def _field(obj: object, key: str, default=None):
+    """Read a field from a pydantic model or a plain dict."""
+    if isinstance(obj, dict):
+        return obj.get(key, default)
+    return getattr(obj, key, default)
+
+
 def build_host_config(payload, existing: HostConfig | None = None) -> HostConfig:
-    ssh = payload.ssh if hasattr(payload, "ssh") else payload["ssh"]
-    password = getattr(ssh, "password", None) or ssh.get("password")
+    ssh = _field(payload, "ssh")
+    if ssh is None:
+        raise ValueError("缺少 SSH 配置")
+
+    password = _field(ssh, "password")
     if password == UNCHANGED_SECRET and existing:
         password = existing.ssh.password
 
-    sudo_password = getattr(ssh, "sudo_password", None) or ssh.get("sudo_password")
+    sudo_password = _field(ssh, "sudo_password")
     if sudo_password == UNCHANGED_SECRET and existing:
         sudo_password = existing.ssh.sudo_password
 
-    use_sudo_su = getattr(ssh, "use_sudo_su", None)
-    if use_sudo_su is None:
-        use_sudo_su = ssh.get("use_sudo_su", False)
+    use_sudo_su = _field(ssh, "use_sudo_su", False)
 
     return HostConfig(
-        id=payload.id if hasattr(payload, "id") else payload["id"],
-        name=payload.name if hasattr(payload, "name") else payload["name"],
+        id=_field(payload, "id"),
+        name=_field(payload, "name"),
         ssh=SSHConfig(
-            host=ssh.host if hasattr(ssh, "host") else ssh["host"],
-            port=ssh.port if hasattr(ssh, "port") else ssh.get("port", 22),
-            user=ssh.user if hasattr(ssh, "user") else ssh["user"],
-            key_file=(ssh.key_file if hasattr(ssh, "key_file") else ssh.get("key_file")) or None,
+            host=_field(ssh, "host") or "",
+            port=int(_field(ssh, "port", 22) or 22),
+            user=_field(ssh, "user") or "",
+            key_file=_field(ssh, "key_file") or None,
             password=password or None,
             use_sudo_su=bool(use_sudo_su),
             sudo_password=sudo_password or None,

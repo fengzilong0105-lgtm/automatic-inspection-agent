@@ -9,6 +9,7 @@ import yaml
 
 from agent.models import AppConfig
 from agent.paths import get_app_root, get_data_dir
+from agent.version import get_app_version
 
 _ENV_PATTERN = re.compile(r"\$\{([^}]+)\}")
 UNCHANGED_SECRET = "__UNCHANGED__"
@@ -183,6 +184,12 @@ class Settings:
             "web": {
                 "port": self._config.web.port,
                 "auth_token_set": bool(self._config.web.auth_token),
+            },
+            "update": {
+                "enabled": self._config.update.enabled,
+                "feed_url": self._config.update.feed_url,
+                "check_on_startup": self._config.update.check_on_startup,
+                "current_version": get_app_version(),
             },
             "ops_report": {
                 "auto_draft_on_incident": self._config.ops_report.auto_draft_on_incident,
