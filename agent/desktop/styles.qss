@@ -26,9 +26,10 @@ QPushButton#sidebarBrand {
 }
 
 QLabel#sidebarBrand {
-    color: #1890FF;
+    color: #096DD9;
     font-size: 20px;
     font-weight: 700;
+    letter-spacing: 0.2px;
 }
 
 QLabel#sidebarSubtitle {
@@ -183,7 +184,7 @@ QFrame#card[accent="danger"][clickable="true"]:hover {
 QFrame#card {
     background-color: #FFFFFF;
     border: 1px solid #E8ECF0;
-    border-radius: 8px;
+    border-radius: 10px;
 }
 
 QFrame#confirmBanner {
@@ -400,13 +401,13 @@ QTableWidget::item:selected {
 }
 
 QHeaderView::section {
-    background-color: #EEF3F9;
+    background-color: #F4F7FB;
     color: #5B6B7C;
     font-weight: 600;
     font-size: 12px;
     padding: 10px 12px;
     border: none;
-    border-bottom: 1px solid #DDE6F0;
+    border-bottom: 1px solid #E2E8F0;
     border-right: 1px solid #E8ECF0;
 }
 

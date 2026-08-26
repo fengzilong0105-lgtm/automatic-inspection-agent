@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
@@ -42,7 +44,9 @@ class MainWindow(QMainWindow):
 
         self._update_bridge = AsyncCall(self)
         self._update_bridge.finished.connect(self._on_startup_update_checked)
-        self._update_bridge.failed.connect(lambda _msg: None)
+        self._update_bridge.failed.connect(
+            lambda msg: logging.getLogger(__name__).info("Startup update check skipped: %s", msg)
+        )
 
         self.tray = TrayController(app_icon, self)
         self.tray.show_requested.connect(self.show_from_tray)

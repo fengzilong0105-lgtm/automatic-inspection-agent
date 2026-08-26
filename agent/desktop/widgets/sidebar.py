@@ -20,15 +20,15 @@ class Sidebar(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("sidebar")
-        self.setFixedWidth(200)
+        self.setFixedWidth(208)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(8, 16, 8, 16)
+        layout.setContentsMargins(10, 18, 10, 16)
         layout.setSpacing(4)
 
         brand_wrap = QWidget()
         brand_layout = QHBoxLayout(brand_wrap)
-        brand_layout.setContentsMargins(8, 4, 8, 8)
+        brand_layout.setContentsMargins(8, 4, 8, 12)
         brand_layout.setSpacing(10)
 
         logo = QLabel()

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from agent.paths import get_bundle_root
 
 # Clash Verge–inspired light cool palette
@@ -28,18 +30,18 @@ WARNING_BG = "#FFFBE6"
 DANGER = "#FF4D4F"
 DANGER_BG = "#FFF2F0"
 
-RADIUS_CARD = 8
+RADIUS_CARD = 10
 RADIUS_BTN = 6
 RADIUS_INPUT = 6
 
-SIDEBAR_WIDTH = 200
+SIDEBAR_WIDTH = 208
 TOPBAR_HEIGHT = 56
 FONT_FAMILY = "Microsoft YaHei UI"
 FONT_SIZE = 13
 FONT_SIZE_TITLE = 18
 FONT_SIZE_STAT = 28
 
-PAGE_MARGIN = 12
+PAGE_MARGIN = 16
 CARD_PADDING = 16
 GRID_GAP = 12
 

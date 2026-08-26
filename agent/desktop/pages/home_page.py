@@ -51,7 +51,7 @@ class HomePage(QWidget):
         self._mode = "refresh"
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(0)
 
         self.stack = QStackedWidget()

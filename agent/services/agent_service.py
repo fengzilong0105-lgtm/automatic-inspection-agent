@@ -175,7 +175,7 @@ class AgentService:
         return host_to_safe_dict(host)
 
     def delete_host(self, host_id: str, *, cascade_services: bool = True) -> dict[str, Any]:
-        """Delete a host plus all related local records (services/incidents/cases/runtime)."""
+        """Delete a host plus related local records (blocking; prefer delete_host_async in UI)."""
         result = remove_host_config(host_id, cascade_services=cascade_services)
         try:
             side = self._run(
@@ -184,6 +184,26 @@ class AgentService:
                     list(result.get("removed_services") or []),
                 )
             ).result(timeout=45)
+            result.update(side)
+        except Exception as exc:
+            result["purge_warning"] = str(exc)
+        return result
+
+    def delete_host_async(self, host_id: str, *, cascade_services: bool = True):
+        """Non-blocking host delete for desktop UI."""
+        return self._run(self._delete_host_async(host_id, cascade_services=cascade_services))
+
+    async def _delete_host_async(
+        self, host_id: str, *, cascade_services: bool = True
+    ) -> dict[str, Any]:
+        result = await asyncio.to_thread(
+            remove_host_config, host_id, cascade_services=cascade_services
+        )
+        try:
+            side = await self._purge_host_side_effects(
+                host_id,
+                list(result.get("removed_services") or []),
+            )
             result.update(side)
         except Exception as exc:
             result["purge_warning"] = str(exc)

@@ -31,6 +31,7 @@ class BackgroundRuntime:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._thread: threading.Thread | None = None
         self._ready = threading.Event()
+        self._start_error: BaseException | None = None
         self.incident_store: IncidentStore | None = None
         self.monitor: MonitorLoop | None = None
         self.chat_agent = ChatAgent()
@@ -40,11 +41,21 @@ class BackgroundRuntime:
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
+            if self._start_error is not None:
+                raise RuntimeError(
+                    f"Agent runtime failed to start: {self._start_error}"
+                ) from self._start_error
             return
+        self._start_error = None
+        self._ready.clear()
         self._thread = threading.Thread(target=self._thread_main, name="agent-runtime", daemon=True)
         self._thread.start()
         if not self._ready.wait(timeout=30):
             raise RuntimeError("Agent runtime failed to start within 30 seconds")
+        if self._start_error is not None:
+            raise RuntimeError(
+                f"Agent runtime failed to start: {self._start_error}"
+            ) from self._start_error
 
     def stop(self) -> None:
         if not self._loop or not self._loop.is_running():
@@ -65,12 +76,19 @@ class BackgroundRuntime:
         self._loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self._loop)
         try:
-            self._loop.run_until_complete(self._async_startup())
+            try:
+                self._loop.run_until_complete(self._async_startup())
+            except BaseException as exc:
+                self._start_error = exc
+                logger.exception("Background runtime startup failed")
+                self._ready.set()
+                return
             self._ready.set()
             self._loop.run_forever()
         finally:
             try:
-                self._loop.run_until_complete(self._async_shutdown())
+                if self._start_error is None:
+                    self._loop.run_until_complete(self._async_shutdown())
             except Exception:
                 logger.exception("Runtime shutdown error")
             self._loop.close()
