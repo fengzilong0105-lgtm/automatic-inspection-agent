@@ -292,16 +292,16 @@ class AgentService:
             "message": result.message,
         }
 
-    def apply_update(self):
-        return self._run(self._apply_update())
+    def apply_update(self, on_progress=None):
+        return self._run(self._apply_update(on_progress))
 
-    async def _apply_update(self) -> dict[str, Any]:
+    async def _apply_update(self, on_progress=None) -> dict[str, Any]:
         from agent.updater import UpdateError, apply_update
 
         settings = get_settings()
         feed = settings.config.update.feed_url
         try:
-            result = await asyncio.to_thread(apply_update, feed)
+            result = await asyncio.to_thread(apply_update, feed, on_progress)
         except UpdateError as exc:
             return {"ok": False, "error": str(exc)}
         return {

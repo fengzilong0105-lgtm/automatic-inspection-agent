@@ -22,6 +22,7 @@ AppVersion={#MyAppVersion}
 AppVerName={#MyAppName} {#MyAppVersion}
 AppPublisher={#MyAppPublisher}
 DefaultDirName={localappdata}\Programs\{#MyAppName}
+UsePreviousAppDir=yes
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 ; Per-user install — avoids UAC; aligns with custom updater (scheme B)

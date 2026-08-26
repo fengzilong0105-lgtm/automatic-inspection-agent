@@ -6,8 +6,10 @@ import os
 import subprocess
 import sys
 import tempfile
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TypeAlias
 from urllib.parse import urlparse
 
 import httpx
@@ -16,6 +18,8 @@ from agent.paths import get_app_root, is_frozen
 from agent.version import get_app_version, is_remote_newer
 
 logger = logging.getLogger(__name__)
+
+DownloadProgressCallback: TypeAlias = Callable[[int, int | None], None]
 
 
 @dataclass(frozen=True)
@@ -98,7 +102,12 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def download_installer(url: str, sha256: str = "", timeout: float = 300.0) -> Path:
+def download_installer(
+    url: str,
+    sha256: str = "",
+    timeout: float = 300.0,
+    on_progress: DownloadProgressCallback | None = None,
+) -> Path:
     parsed = urlparse(url)
     name = Path(parsed.path).name or "SteadyOps-Setup.exe"
     if not name.lower().endswith(".exe"):
@@ -112,9 +121,17 @@ def download_installer(url: str, sha256: str = "", timeout: float = 300.0) -> Pa
         with httpx.Client(timeout=timeout, follow_redirects=True) as client:
             with client.stream("GET", url) as response:
                 response.raise_for_status()
+                total_raw = response.headers.get("content-length")
+                total = int(total_raw) if total_raw and total_raw.isdigit() else None
+                downloaded = 0
+                if on_progress:
+                    on_progress(0, total)
                 with dest.open("wb") as handle:
-                    for chunk in response.iter_bytes():
+                    for chunk in response.iter_bytes(64 * 1024):
                         handle.write(chunk)
+                        downloaded += len(chunk)
+                        if on_progress:
+                            on_progress(downloaded, total)
     except httpx.HTTPError as exc:
         raise UpdateError(f"下载安装包失败: {exc}") from exc
 
@@ -146,18 +163,26 @@ def launch_silent_upgrade(setup_path: Path) -> Path:
     if not setup_path.is_file():
         raise UpdateError(f"安装包不存在: {setup_path}")
 
+    install_dir = app_exe.parent
     helper = Path(tempfile.gettempdir()) / "SteadyOpsUpdate" / "apply_update.cmd"
+    log_path = helper.parent / "install.log"
     helper.parent.mkdir(parents=True, exist_ok=True)
 
     # /SILENT: wizard hidden but progress may show; /NORESTART: don't reboot OS
+    # /DIR= upgrades the directory of the running exe (not Inno's default path).
     # CLOSEAPPLICATIONS is configured in the .iss; FORCECLOSEAPPLICATIONS helps stubborn locks
     setup = str(setup_path.resolve())
     target = str(app_exe)
+    app_dir = str(install_dir)
+    log_file = str(log_path)
     script = "\r\n".join(
         [
             "@echo off",
-            "ping -n 3 127.0.0.1 >nul",
-            f'"{setup}" /SILENT /NORESTART /FORCECLOSEAPPLICATIONS',
+            "ping -n 5 127.0.0.1 >nul",
+            (
+                f'"{setup}" /SILENT /NORESTART /FORCECLOSEAPPLICATIONS '
+                f'/DIR="{app_dir}" /LOG="{log_file}"'
+            ),
             "if errorlevel 1 exit /b 1",
             "ping -n 2 127.0.0.1 >nul",
             f'start "" "{target}"',
@@ -186,7 +211,10 @@ def launch_silent_upgrade(setup_path: Path) -> Path:
     return helper
 
 
-def apply_update(feed_url: str) -> UpdateCheckResult:
+def apply_update(
+    feed_url: str,
+    on_progress: DownloadProgressCallback | None = None,
+) -> UpdateCheckResult:
     """Check, download, verify, launch silent installer. Caller must exit the app."""
     if not is_frozen() and not os.environ.get("STEADYOPS_ALLOW_DEV_UPDATE"):
         raise UpdateError("开发模式默认不执行安装升级。打包安装后再测，或设置 STEADYOPS_ALLOW_DEV_UPDATE=1")
@@ -195,6 +223,6 @@ def apply_update(feed_url: str) -> UpdateCheckResult:
     if not result.available:
         return result
 
-    setup = download_installer(result.url, result.sha256)
+    setup = download_installer(result.url, result.sha256, on_progress=on_progress)
     launch_silent_upgrade(setup)
     return result

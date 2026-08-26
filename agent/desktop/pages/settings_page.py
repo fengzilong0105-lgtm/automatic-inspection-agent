@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QObject, Qt, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMessageBox,
+    QProgressBar,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -37,6 +38,10 @@ from agent.desktop.widgets.form_rows import labeled_field_row, style_input
 from agent.desktop.widgets.hosts_panel import HostsPanel
 from agent.desktop.widgets.word_wrap_label import WordWrapLabel
 from agent.services.agent_service import AgentService
+
+
+class _UpdateDownloadProgress(QObject):
+    changed = Signal(int, int)
 
 
 class SettingsPage(QWidget):
@@ -294,6 +299,12 @@ class SettingsPage(QWidget):
         self.update_status = QLabel("")
         self.update_status.setObjectName("mutedText")
         self.update_status.setWordWrap(True)
+        self.update_progress = QProgressBar()
+        self.update_progress.setTextVisible(True)
+        self.update_progress.setVisible(False)
+        self.update_progress.setMinimum(0)
+        self.update_progress.setMaximum(100)
+        self.update_progress.setValue(0)
 
         update_btn_row = QHBoxLayout()
         self.update_save_btn = QPushButton("保存更新设置")
@@ -316,6 +327,7 @@ class SettingsPage(QWidget):
         update_box.addLayout(labeled_field_row("版本源 URL", self.update_feed_url))
         update_box.addWidget(self.update_version_label)
         update_box.addLayout(update_btn_row)
+        update_box.addWidget(self.update_progress)
         update_box.addWidget(self.update_status)
 
         update_card.content_layout.addWidget(update_title)
@@ -340,7 +352,9 @@ class SettingsPage(QWidget):
 
         self._update_bridge = AsyncCall(self)
         self._update_bridge.finished.connect(self._on_update_async_finished)
-        self._update_bridge.failed.connect(lambda msg: self.update_status.setText(f"错误: {msg}"))
+        self._update_bridge.failed.connect(self._on_update_async_failed)
+        self._download_progress = _UpdateDownloadProgress(self)
+        self._download_progress.changed.connect(self._on_download_progress)
 
         self._memory_bridge = AsyncCall(self)
         self._memory_bridge.finished.connect(self._on_memory_async_finished)
@@ -555,6 +569,27 @@ class SettingsPage(QWidget):
         self._pending_update = None
         self._update_bridge.submit(self.service.check_for_update())
 
+    def _reset_update_progress(self) -> None:
+        self.update_progress.setVisible(False)
+        self.update_progress.setMaximum(100)
+        self.update_progress.setValue(0)
+
+    def _on_download_progress(self, downloaded: int, total: int) -> None:
+        self.update_progress.setVisible(True)
+        if total > 0:
+            self.update_progress.setMaximum(total)
+            self.update_progress.setValue(downloaded)
+            percent = min(100, downloaded * 100 // total)
+            self.update_status.setText(f"正在下载安装包… {percent}%")
+        else:
+            self.update_progress.setMaximum(0)
+            mb = downloaded / (1024 * 1024)
+            self.update_status.setText(f"正在下载安装包… {mb:.1f} MB")
+
+    def _on_update_async_failed(self, message: str) -> None:
+        self._reset_update_progress()
+        self.update_status.setText(f"错误: {message}")
+
     def apply_update(self) -> None:
         if not self._pending_update or not self._pending_update.get("available"):
             self.update_status.setText("请先检查更新")
@@ -573,23 +608,35 @@ class SettingsPage(QWidget):
         )
         if reply != QMessageBox.StandardButton.Yes:
             return
-        self.update_status.setText("正在下载并准备安装…")
+        self.update_progress.setVisible(True)
+        self.update_progress.setMaximum(100)
+        self.update_progress.setValue(0)
+        self.update_status.setText("正在下载安装包…")
         self.update_apply_btn.setEnabled(False)
-        self._update_bridge.submit(self.service.apply_update())
+
+        def on_progress(downloaded: int, total: int | None) -> None:
+            self._download_progress.changed.emit(downloaded, total or 0)
+
+        self._update_bridge.submit(self.service.apply_update(on_progress=on_progress))
 
     def _on_update_async_finished(self, result) -> None:
         if isinstance(result, str):
+            self._reset_update_progress()
             self.update_status.setText(result)
             return
         if not isinstance(result, dict):
+            self._reset_update_progress()
             self.update_status.setText(str(result))
             return
         if not result.get("ok"):
+            self._reset_update_progress()
             self.update_status.setText(result.get("error") or "更新失败")
             self.update_apply_btn.setEnabled(False)
             return
         if result.get("restarting"):
-            self.update_status.setText("安装程序已启动，应用即将退出…")
+            self.update_progress.setMaximum(100)
+            self.update_progress.setValue(100)
+            self.update_status.setText("下载完成，安装程序已启动，应用即将退出…")
             from PySide6.QtWidgets import QApplication
 
             window = self.window()
@@ -598,6 +645,7 @@ class SettingsPage(QWidget):
             else:
                 QApplication.instance().quit()
             return
+        self._reset_update_progress()
         self._pending_update = result
         self.update_status.setText(result.get("message") or "")
         if result.get("notes"):

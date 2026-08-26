@@ -4,11 +4,18 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from agent.paths import is_frozen
+
 # Single source embedded for frozen builds; build.ps1 syncs from pyproject.toml.
-APP_VERSION = "0.3.0"
+APP_VERSION = "0.3.2"
 
 
 def get_app_version() -> str:
+    # Frozen builds must use the constant baked in at compile time. Bundled
+    # importlib metadata can lag behind APP_VERSION and report a stale version.
+    if is_frozen():
+        return APP_VERSION
+
     try:
         from importlib.metadata import version
 
