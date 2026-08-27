@@ -36,7 +36,7 @@ class CaseEditorPage(QWidget):
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(12, 12, 12, 12)
-        outer.setSpacing(12)
+        outer.setSpacing(14)
 
         header = QHBoxLayout()
         self.back_btn = QPushButton("← 返回列表")

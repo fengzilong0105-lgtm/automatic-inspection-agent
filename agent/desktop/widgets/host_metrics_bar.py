@@ -17,7 +17,6 @@ from PySide6.QtWidgets import (
 )
 
 from agent.desktop.async_call import AsyncCall
-from agent.desktop.widgets.card import Card
 from agent.services.agent_service import AgentService
 
 POLL_MS = 4000
@@ -56,34 +55,45 @@ def _fmt_pct(value: float | None) -> str:
 
 
 class _MetricCell(QWidget):
-    def __init__(self, title: str, parent=None) -> None:
-        super().__init__(parent)
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(2)
+    """Single-line CPU / mem / disk cell for the compact metrics strip."""
 
-        head = QHBoxLayout()
-        head.setContentsMargins(0, 0, 0, 0)
-        head.setSpacing(6)
+    def __init__(self, title: str, *, accent: str, parent=None) -> None:
+        super().__init__(parent)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+
+        self.dot = QLabel("●")
+        self.dot.setObjectName("metricsDot")
+        self.dot.setProperty("accent", accent)
+        self.dot.setFixedWidth(14)
+
         self.title = QLabel(title)
         self.title.setObjectName("metricsCellTitle")
+        self.title.setFixedWidth(28 if len(title) <= 2 else 36)
+
         self.value = QLabel("—")
         self.value.setObjectName("metricsCellValue")
-        head.addWidget(self.title)
-        head.addWidget(self.value, 1)
-        layout.addLayout(head)
+        self.value.setMinimumWidth(36)
 
         self.bar = QProgressBar()
         self.bar.setObjectName("metricsBar")
+        self.bar.setProperty("accent", accent)
         self.bar.setRange(0, 100)
         self.bar.setValue(0)
         self.bar.setTextVisible(False)
-        self.bar.setFixedHeight(8)
-        layout.addWidget(self.bar)
+        self.bar.setFixedHeight(4)
+        self.bar.setMinimumWidth(48)
 
         self.hint = QLabel("")
         self.hint.setObjectName("metricsCellHint")
-        layout.addWidget(self.hint)
+        self.hint.setMinimumWidth(0)
+
+        layout.addWidget(self.dot)
+        layout.addWidget(self.title)
+        layout.addWidget(self.value)
+        layout.addWidget(self.bar, 1)
+        layout.addWidget(self.hint, 0)
 
     def set_data(
         self,
@@ -108,48 +118,42 @@ class _MetricCell(QWidget):
             self.value.setText(value_text or _fmt_pct(percent))
         self.hint.setText(hint)
         self.hint.setVisible(bool(hint))
+        if hint:
+            self.hint.setToolTip(hint)
 
 
-class HostMetricsBar(Card):
-    """Collapsed host CPU/mem/disk strip with expandable Top5 / disk details."""
+class HostMetricsBar(QWidget):
+    """Compact host CPU/mem/disk strip; expand for Top5 / disk tables."""
 
     def __init__(self, service: AgentService, parent=None) -> None:
-        super().__init__(parent, padding=10)
+        super().__init__(parent)
         self.service = service
         self._host_id = ""
         self._expanded = False
         self._active = False
         self._fetching = False
 
-        root = self.content_layout
-        root.setSpacing(8)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(6)
 
         summary = QHBoxLayout()
-        summary.setSpacing(16)
-        self.cpu_cell = _MetricCell("CPU")
-        self.mem_cell = _MetricCell("内存")
-        self.disk_cell = _MetricCell("磁盘")
+        summary.setSpacing(14)
+        self.cpu_cell = _MetricCell("CPU", accent="cpu")
+        self.mem_cell = _MetricCell("内存", accent="mem")
+        self.disk_cell = _MetricCell("磁盘", accent="disk")
         summary.addWidget(self.cpu_cell, 1)
         summary.addWidget(self.mem_cell, 1)
         summary.addWidget(self.disk_cell, 1)
 
-        self.status_label = QLabel("")
-        self.status_label.setObjectName("metricsStatus")
-        self.status_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-
-        self.toggle_btn = QPushButton("展开详情 ▾")
+        self.toggle_btn = QPushButton("详情 ▾")
         self.toggle_btn.setObjectName("metricsToggle")
         self.toggle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.toggle_btn.clicked.connect(self._toggle_expanded)
         self.toggle_btn.setEnabled(False)
+        self.toggle_btn.setFixedHeight(24)
 
-        right = QVBoxLayout()
-        right.setSpacing(4)
-        right.addWidget(self.status_label)
-        right.addWidget(self.toggle_btn, 0, Qt.AlignmentFlag.AlignRight)
-        right.addStretch()
-
-        summary.addLayout(right, 0)
+        summary.addWidget(self.toggle_btn, 0, Qt.AlignmentFlag.AlignVCenter)
         root.addLayout(summary)
 
         self.detail = QWidget()
@@ -213,7 +217,6 @@ class HostMetricsBar(Card):
             self.set_empty("请先选择主机")
             return
         self.toggle_btn.setEnabled(True)
-        self.status_label.setText("采集中…")
         if self._active or self.isVisible():
             self.resume()
         else:
@@ -222,8 +225,7 @@ class HostMetricsBar(Card):
     def set_empty(self, message: str) -> None:
         self.cpu_cell.set_data(None)
         self.mem_cell.set_data(None)
-        self.disk_cell.set_data(None, hint="")
-        self.status_label.setText(message)
+        self.disk_cell.set_data(None, hint=message if message else "")
         self.toggle_btn.setEnabled(False)
         self._fill_process_table(self.cpu_table, [], kind="cpu")
         self._fill_process_table(self.mem_table, [], kind="mem")
@@ -244,7 +246,7 @@ class HostMetricsBar(Card):
     def _toggle_expanded(self) -> None:
         self._expanded = not self._expanded
         self.detail.setVisible(self._expanded)
-        self.toggle_btn.setText("收起详情 ▴" if self._expanded else "展开详情 ▾")
+        self.toggle_btn.setText("详情 ▴" if self._expanded else "详情 ▾")
         if self._expanded and self._host_id:
             self._poll(force=True)
 
@@ -276,12 +278,17 @@ class HostMetricsBar(Card):
         disk_mount = data.get("disk_mount") or ""
         disk_hint = disk_mount
         if disks:
-            disk_hint = f"{disk_mount or disks[0].get('mount', '')} · {len(disks)} 个挂载点"
+            disk_hint = f"{len(disks)} 个挂载点"
+            if disk_mount:
+                disk_hint = f"{disk_mount} · {disk_hint}"
+            elif disks:
+                first = str(disks[0].get("mount") or "")
+                if first:
+                    disk_hint = f"{first} · {len(disks)} 个挂载点"
 
         self.cpu_cell.set_data(cpu, hint=f"load {load}" if load else "")
         self.mem_cell.set_data(mem, hint=mem_hint)
         self.disk_cell.set_data(disk, hint=disk_hint)
-        self.status_label.setText("")
 
         if self._expanded:
             self._fill_process_table(self.cpu_table, data.get("top_cpu") or [], kind="cpu")
@@ -290,9 +297,8 @@ class HostMetricsBar(Card):
 
     def _on_error(self, message: str) -> None:
         self._fetching = False
-        self.status_label.setText(f"主机不可达：{message}")
-        for cell in (self.cpu_cell, self.mem_cell, self.disk_cell):
-            cell.setProperty("level", LEVEL_DANGER)
+        self.disk_cell.set_data(None, hint="不可达", value_text="—")
+        self.disk_cell.hint.setToolTip(message)
 
     def _fill_process_table(self, table: QTableWidget, rows: list[dict], *, kind: str) -> None:
         table.setRowCount(len(rows))

@@ -14,7 +14,12 @@ from PySide6.QtWidgets import (
 )
 
 from agent.desktop.widgets.card import Card
-from agent.desktop.widgets.table_cells import make_text_item
+from agent.desktop.widgets.table_cells import (
+    TABLE_ACTION_ROW_HEIGHT,
+    make_table_action_button,
+    make_table_action_cell,
+    make_text_item,
+)
 
 _FILTER_TITLES = {
     "ok": "正常服务",
@@ -62,7 +67,7 @@ class ServicesListView(QWidget):
         self.table.setAlternatingRowColors(True)
         self.table.setShowGrid(False)
         self.table.verticalHeader().setVisible(False)
-        self.table.verticalHeader().setDefaultSectionSize(46)
+        self.table.verticalHeader().setDefaultSectionSize(TABLE_ACTION_ROW_HEIGHT)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.table.setTextElideMode(Qt.TextElideMode.ElideRight)
@@ -144,30 +149,23 @@ class ServicesListView(QWidget):
             detail = status.get("detail", "") or ""
             self.table.setItem(row, 4, make_text_item(detail, tooltip=detail))
 
-            self.table.setRowHeight(row, 46)
             if item.get("disabled"):
                 service_id = svc.get("id", "")
-                actions = QWidget()
-                actions.setAutoFillBackground(False)
-                actions_layout = QHBoxLayout(actions)
-                actions_layout.setContentsMargins(6, 4, 6, 4)
-                actions_layout.setSpacing(6)
-                enable_btn = QPushButton("启用巡检")
-                enable_btn.setObjectName("tableActionButton")
-                enable_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-                enable_btn.clicked.connect(
-                    lambda _checked=False, sid=service_id: self.enable_service.emit(sid)
+                enable_btn = make_table_action_button(
+                    "启用巡检",
+                    on_click=lambda _checked=False, sid=service_id: self.enable_service.emit(sid),
                 )
-                remove_btn = QPushButton("移除")
-                remove_btn.setObjectName("tableActionButtonDanger")
-                remove_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-                remove_btn.clicked.connect(
-                    lambda _checked=False, sid=service_id: self.remove_service.emit(sid)
+                remove_btn = make_table_action_button(
+                    "移除",
+                    object_name="tableActionButtonDanger",
+                    on_click=lambda _checked=False, sid=service_id: self.remove_service.emit(sid),
                 )
-                actions_layout.addWidget(enable_btn)
-                actions_layout.addWidget(remove_btn)
-                self.table.setCellWidget(row, 5, actions)
+                self.table.setRowHeight(row, TABLE_ACTION_ROW_HEIGHT)
+                self.table.setCellWidget(
+                    row, 5, make_table_action_cell(enable_btn, remove_btn)
+                )
             else:
+                self.table.setRowHeight(row, TABLE_ACTION_ROW_HEIGHT)
                 self.table.removeCellWidget(row, 5)
                 self.table.setItem(row, 5, QTableWidgetItem(""))
 

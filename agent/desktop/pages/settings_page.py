@@ -60,7 +60,7 @@ class SettingsPage(QWidget):
         body = QWidget()
         outer = QVBoxLayout(body)
         outer.setContentsMargins(12, 12, 12, 12)
-        outer.setSpacing(12)
+        outer.setSpacing(14)
 
         page_layout = QVBoxLayout(self)
         page_layout.setContentsMargins(0, 0, 0, 0)

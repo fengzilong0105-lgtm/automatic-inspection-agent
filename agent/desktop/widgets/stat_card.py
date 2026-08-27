@@ -16,7 +16,7 @@ class StatCard(Card):
         accent: str = "default",
         parent=None,
     ) -> None:
-        super().__init__(parent, padding=14)
+        super().__init__(parent, padding=16)
         self.setProperty("accent", accent)
         self.setProperty("clickable", False)
 
@@ -27,7 +27,7 @@ class StatCard(Card):
         self.value_label.setObjectName("statValue")
 
         layout = self.content_layout
-        layout.setSpacing(4)
+        layout.setSpacing(6)
         layout.addWidget(self.title_label)
         layout.addWidget(self.value_label)
         if hint:

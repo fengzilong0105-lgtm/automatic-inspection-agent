@@ -5,6 +5,7 @@ from PySide6.QtWidgets import QButtonGroup, QHBoxLayout, QLabel, QPushButton, QV
 
 from agent.brand import PRODUCT_NAME, PRODUCT_SUBTITLE
 from agent.desktop.assets import load_logo_pixmap
+from agent.version import get_app_version
 
 NAV_ITEMS: list[tuple[str, str]] = [
     ("home", "概览"),
@@ -20,15 +21,15 @@ class Sidebar(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("sidebar")
-        self.setFixedWidth(208)
+        self.setFixedWidth(192)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(10, 18, 10, 16)
+        layout.setContentsMargins(8, 16, 6, 10)
         layout.setSpacing(4)
 
         brand_wrap = QWidget()
         brand_layout = QHBoxLayout(brand_wrap)
-        brand_layout.setContentsMargins(8, 4, 8, 12)
+        brand_layout.setContentsMargins(6, 4, 4, 10)
         brand_layout.setSpacing(10)
 
         logo = QLabel()
@@ -66,6 +67,11 @@ class Sidebar(QWidget):
             layout.addWidget(btn)
 
         layout.addStretch()
+
+        version = QLabel(f"v{get_app_version()}")
+        version.setObjectName("sidebarVersion")
+        layout.addWidget(version)
+
         self._buttons[0].setChecked(True)
 
     def _on_nav(self, index: int) -> None:

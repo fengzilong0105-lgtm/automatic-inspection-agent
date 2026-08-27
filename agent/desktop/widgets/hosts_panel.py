@@ -14,7 +14,12 @@ from PySide6.QtWidgets import (
 
 from agent.desktop.async_call import AsyncCall
 from agent.desktop.widgets.host_editor_dialog import HostEditorDialog
-from agent.desktop.widgets.table_cells import make_text_item
+from agent.desktop.widgets.table_cells import (
+    TABLE_ACTION_ROW_HEIGHT,
+    make_table_action_button,
+    make_table_action_cell,
+    make_text_item,
+)
 from agent.services.agent_service import AgentService
 
 
@@ -51,7 +56,7 @@ class HostsPanel(QWidget):
         self.table.setObjectName("hostsTable")
         self.table.setHorizontalHeaderLabels(["名称", "主机 ID", "地址", "用户", "操作"])
         self.table.verticalHeader().setVisible(False)
-        self.table.verticalHeader().setDefaultSectionSize(46)
+        self.table.verticalHeader().setDefaultSectionSize(TABLE_ACTION_ROW_HEIGHT)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         header_view = self.table.horizontalHeader()
@@ -87,25 +92,19 @@ class HostsPanel(QWidget):
             self.table.setItem(row, 2, make_text_item(address))
             self.table.setItem(row, 3, make_text_item(ssh.get("user", "")))
 
-            actions = QWidget()
-            actions.setAutoFillBackground(False)
-            actions_layout = QHBoxLayout(actions)
-            actions_layout.setContentsMargins(6, 4, 6, 4)
-            actions_layout.setSpacing(6)
-            edit_btn = QPushButton("编辑")
-            edit_btn.setObjectName("tableActionButton")
-            edit_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            edit_btn = make_table_action_button(
+                "编辑",
+                on_click=lambda _checked=False, h=host: self._edit_host(h),
+            )
             edit_btn.setEnabled(not self._busy)
-            edit_btn.clicked.connect(lambda _checked=False, h=host: self._edit_host(h))
-            actions_layout.addWidget(edit_btn)
-            delete_btn = QPushButton("删除")
-            delete_btn.setObjectName("tableActionButtonDanger")
-            delete_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            delete_btn = make_table_action_button(
+                "删除",
+                object_name="tableActionButtonDanger",
+                on_click=lambda _checked=False, h=host: self._delete_host(h),
+            )
             delete_btn.setEnabled(not self._busy)
-            delete_btn.clicked.connect(lambda _checked=False, h=host: self._delete_host(h))
-            actions_layout.addWidget(delete_btn)
-            self.table.setRowHeight(row, 46)
-            self.table.setCellWidget(row, 4, actions)
+            self.table.setRowHeight(row, TABLE_ACTION_ROW_HEIGHT)
+            self.table.setCellWidget(row, 4, make_table_action_cell(edit_btn, delete_btn))
 
     def _set_busy(self, busy: bool, message: str = "") -> None:
         self._busy = busy
