@@ -13,6 +13,8 @@ class AsyncCall(QObject):
 
     finished = Signal(object)
     failed = Signal(str)
+    # Fired when a newer submit() superseded this request (UI should clear busy state).
+    superseded = Signal()
     # Always queued onto the thread that owns this QObject (GUI).
     _deliver_ok = Signal(int, object)
     _deliver_err = Signal(int, str)
@@ -43,6 +45,7 @@ class AsyncCall(QObject):
     def _on_ok(self, token: int, result: object) -> None:
         cb = self._on_success.pop(token, None)
         if token != self._token:
+            self.superseded.emit()
             return
         if cb:
             cb(result)
@@ -51,5 +54,6 @@ class AsyncCall(QObject):
     def _on_err(self, token: int, message: str) -> None:
         self._on_success.pop(token, None)
         if token != self._token:
+            self.superseded.emit()
             return
         self.failed.emit(message)

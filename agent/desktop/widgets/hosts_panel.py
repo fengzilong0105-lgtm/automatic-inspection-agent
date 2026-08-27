@@ -12,8 +12,14 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from agent.desktop.async_call import AsyncCall
 from agent.desktop.widgets.host_editor_dialog import HostEditorDialog
-from agent.desktop.widgets.table_cells import make_text_item
+from agent.desktop.widgets.table_cells import (
+    TABLE_ACTION_ROW_HEIGHT,
+    make_table_action_button,
+    make_table_action_cell,
+    make_text_item,
+)
 from agent.services.agent_service import AgentService
 
 
@@ -24,6 +30,9 @@ class HostsPanel(QWidget):
         super().__init__(parent)
         self.service = service
         self._hosts: list[dict] = []
+        self._busy = False
+        self._scan_host_id = ""
+        self._delete_name = ""
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -47,7 +56,7 @@ class HostsPanel(QWidget):
         self.table.setObjectName("hostsTable")
         self.table.setHorizontalHeaderLabels(["名称", "主机 ID", "地址", "用户", "操作"])
         self.table.verticalHeader().setVisible(False)
-        self.table.verticalHeader().setDefaultSectionSize(46)
+        self.table.verticalHeader().setDefaultSectionSize(TABLE_ACTION_ROW_HEIGHT)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         header_view = self.table.horizontalHeader()
@@ -59,12 +68,18 @@ class HostsPanel(QWidget):
         self.table.setColumnWidth(4, 176)
         layout.addWidget(self.table)
 
+        self._bridge = AsyncCall(self)
+        self._bridge.finished.connect(self._on_async_finished)
+        self._bridge.failed.connect(self._on_async_failed)
+        self._pending_action = ""
+
         self.reload()
 
     def reload(self) -> None:
         data = self.service.list_hosts()
         self._hosts = list(data.get("hosts", []))
-        self.status_label.setText(f"共 {len(self._hosts)} 台")
+        if not self._busy:
+            self.status_label.setText(f"共 {len(self._hosts)} 台")
         self.table.setRowCount(len(self._hosts))
 
         for row, host in enumerate(self._hosts):
@@ -77,25 +92,32 @@ class HostsPanel(QWidget):
             self.table.setItem(row, 2, make_text_item(address))
             self.table.setItem(row, 3, make_text_item(ssh.get("user", "")))
 
-            actions = QWidget()
-            actions.setAutoFillBackground(False)
-            actions_layout = QHBoxLayout(actions)
-            actions_layout.setContentsMargins(6, 4, 6, 4)
-            actions_layout.setSpacing(6)
-            edit_btn = QPushButton("编辑")
-            edit_btn.setObjectName("tableActionButton")
-            edit_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            edit_btn.clicked.connect(lambda _checked=False, h=host: self._edit_host(h))
-            actions_layout.addWidget(edit_btn)
-            delete_btn = QPushButton("删除")
-            delete_btn.setObjectName("tableActionButtonDanger")
-            delete_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            delete_btn.clicked.connect(lambda _checked=False, h=host: self._delete_host(h))
-            actions_layout.addWidget(delete_btn)
-            self.table.setRowHeight(row, 46)
-            self.table.setCellWidget(row, 4, actions)
+            edit_btn = make_table_action_button(
+                "编辑",
+                on_click=lambda _checked=False, h=host: self._edit_host(h),
+            )
+            edit_btn.setEnabled(not self._busy)
+            delete_btn = make_table_action_button(
+                "删除",
+                object_name="tableActionButtonDanger",
+                on_click=lambda _checked=False, h=host: self._delete_host(h),
+            )
+            delete_btn.setEnabled(not self._busy)
+            self.table.setRowHeight(row, TABLE_ACTION_ROW_HEIGHT)
+            self.table.setCellWidget(row, 4, make_table_action_cell(edit_btn, delete_btn))
+
+    def _set_busy(self, busy: bool, message: str = "") -> None:
+        self._busy = busy
+        self.add_btn.setEnabled(not busy)
+        if busy:
+            self.status_label.setText(message or "处理中…")
+        else:
+            self.status_label.setText(f"共 {len(self._hosts)} 台")
+        self.reload()
 
     def _add_host(self) -> None:
+        if self._busy:
+            return
         dialog = HostEditorDialog(self.service, is_new=True, parent=self.window())
         if dialog.exec() != HostEditorDialog.DialogCode.Accepted:
             return
@@ -115,22 +137,14 @@ class HostsPanel(QWidget):
         if answer == QMessageBox.StandardButton.Yes and host_id:
             self.service.set_active_host(host_id)
             self.hosts_changed.emit()
-            try:
-                future = self.service.scan_host(host_id)
-                discovered = future.result(timeout=180)
-                services = self.service.discovered_to_services(host_id, discovered)
-                self.service.register_services(services)
-                # 注册完成后再通知一次，让概览页拿到新注册的服务
-                self.hosts_changed.emit()
-                stopped = sum(1 for item in discovered if not item.get("running", True))
-                message = f"已注册 {len(services)} 个服务。"
-                if stopped:
-                    message += f"\n其中 {stopped} 个当前未运行，已默认停用巡检，可在服务列表中手动启用。"
-                QMessageBox.information(self, "扫描完成", message)
-            except Exception as exc:
-                QMessageBox.warning(self, "扫描失败", str(exc))
+            self._pending_action = "scan"
+            self._scan_host_id = host_id
+            self._set_busy(True, "正在扫描服务，请稍候…")
+            self._bridge.submit(self.service.scan_host(host_id))
 
     def _edit_host(self, host: dict) -> None:
+        if self._busy:
+            return
         dialog = HostEditorDialog(
             self.service,
             host=host,
@@ -142,6 +156,8 @@ class HostsPanel(QWidget):
             self.hosts_changed.emit()
 
     def _delete_host(self, host: dict) -> None:
+        if self._busy:
+            return
         host_id = host.get("id", "")
         name = host.get("name", host_id)
         try:
@@ -177,13 +193,40 @@ class HostsPanel(QWidget):
         if answer != QMessageBox.StandardButton.Yes:
             return
 
-        try:
-            result = self.service.delete_host(host_id)
+        self._pending_action = "delete"
+        self._delete_name = name
+        self._set_busy(True, f"正在删除「{name}」…")
+        self._bridge.submit(self.service.delete_host_async(host_id))
+
+    def _on_async_finished(self, result: object) -> None:
+        action = self._pending_action
+        self._pending_action = ""
+        self._set_busy(False)
+
+        if action == "scan":
+            try:
+                discovered = result if isinstance(result, list) else []
+                services = self.service.discovered_to_services(self._scan_host_id, discovered)
+                self.service.register_services(services)
+                self.hosts_changed.emit()
+                stopped = sum(1 for item in discovered if not item.get("running", True))
+                message = f"已注册 {len(services)} 个服务。"
+                if stopped:
+                    message += (
+                        f"\n其中 {stopped} 个当前未运行，已默认停用巡检，可在服务列表中手动启用。"
+                    )
+                QMessageBox.information(self, "扫描完成", message)
+            except Exception as exc:
+                QMessageBox.warning(self, "扫描失败", str(exc))
+            return
+
+        if action == "delete" and isinstance(result, dict):
             removed = result.get("removed_services") or []
             incidents = int(result.get("removed_incidents") or 0)
             cases = int(result.get("removed_problem_cases") or 0)
             self.reload()
             self.hosts_changed.emit()
+            name = self._delete_name
             parts = [f"已删除服务器「{name}」"]
             if removed:
                 parts.append(f"关联服务 {len(removed)} 个")
@@ -196,5 +239,14 @@ class HostsPanel(QWidget):
             if warning:
                 detail += f"\n\n部分运行时数据清理失败：{warning}"
             QMessageBox.information(self, "删除成功", detail + "。")
-        except Exception as exc:
-            QMessageBox.critical(self, "删除失败", str(exc))
+
+    def _on_async_failed(self, msg: str) -> None:
+        action = self._pending_action
+        self._pending_action = ""
+        self._set_busy(False)
+        if action == "scan":
+            QMessageBox.warning(self, "扫描失败", msg)
+        elif action == "delete":
+            QMessageBox.critical(self, "删除失败", msg)
+        else:
+            QMessageBox.warning(self, "操作失败", msg)

@@ -1,0 +1,6 @@
+{
+    "version":  "0.3.2",
+    "url":  "http://106.120.201.126:14828/down/steadyOps/SteadyOps-Setup-0.3.2.exe",
+    "sha256":  "d0abb5c2a8177bb63bc795edabcb65f91a9dda241673285902b1cb6587611a87",
+    "notes":  "修复在线更新进度与版本显示"
+}

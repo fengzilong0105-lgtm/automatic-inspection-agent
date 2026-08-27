@@ -22,9 +22,9 @@ class Card(QFrame):
 
         if with_shadow:
             shadow = QGraphicsDropShadowEffect(self)
-            shadow.setBlurRadius(16)
-            shadow.setOffset(0, 2)
-            shadow.setColor(QColor(0, 0, 0, 20))
+            shadow.setBlurRadius(20)
+            shadow.setOffset(0, 3)
+            shadow.setColor(QColor(0, 0, 0, 22))
             self.setGraphicsEffect(shadow)
 
     @property

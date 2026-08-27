@@ -19,8 +19,10 @@ from agent.config_mgr.setup import (
     OpsReportSetupPayload,
     SetupSavePayload,
     SSHSetupPayload,
+    UpdateSetupPayload,
     apply_setup_payload,
     apply_llm_feishu_payload,
+    apply_update_payload,
     test_feishu_config,
     test_llm_config,
     test_ssh_config,
@@ -173,7 +175,7 @@ class AgentService:
         return host_to_safe_dict(host)
 
     def delete_host(self, host_id: str, *, cascade_services: bool = True) -> dict[str, Any]:
-        """Delete a host plus all related local records (services/incidents/cases/runtime)."""
+        """Delete a host plus related local records (blocking; prefer delete_host_async in UI)."""
         result = remove_host_config(host_id, cascade_services=cascade_services)
         try:
             side = self._run(
@@ -182,6 +184,26 @@ class AgentService:
                     list(result.get("removed_services") or []),
                 )
             ).result(timeout=45)
+            result.update(side)
+        except Exception as exc:
+            result["purge_warning"] = str(exc)
+        return result
+
+    def delete_host_async(self, host_id: str, *, cascade_services: bool = True):
+        """Non-blocking host delete for desktop UI."""
+        return self._run(self._delete_host_async(host_id, cascade_services=cascade_services))
+
+    async def _delete_host_async(
+        self, host_id: str, *, cascade_services: bool = True
+    ) -> dict[str, Any]:
+        result = await asyncio.to_thread(
+            remove_host_config, host_id, cascade_services=cascade_services
+        )
+        try:
+            side = await self._purge_host_side_effects(
+                host_id,
+                list(result.get("removed_services") or []),
+            )
             result.update(side)
         except Exception as exc:
             result["purge_warning"] = str(exc)
@@ -236,6 +258,61 @@ class AgentService:
     ) -> str:
         await asyncio.to_thread(apply_llm_feishu_payload, llm, feishu, ops_report)
         return "设置已保存"
+
+    def save_update_settings(self, payload: UpdateSetupPayload) -> None:
+        apply_update_payload(payload)
+
+    def save_update_settings_async(self, payload: UpdateSetupPayload):
+        return self._run(self._save_update_settings_async(payload))
+
+    async def _save_update_settings_async(self, payload: UpdateSetupPayload) -> str:
+        await asyncio.to_thread(apply_update_payload, payload)
+        return "更新设置已保存"
+
+    def check_for_update(self):
+        return self._run(self._check_for_update())
+
+    async def _check_for_update(self) -> dict[str, Any]:
+        from agent.updater import UpdateError, check_for_update
+
+        settings = get_settings()
+        feed = settings.config.update.feed_url
+        try:
+            result = await asyncio.to_thread(check_for_update, feed)
+        except UpdateError as exc:
+            return {"ok": False, "error": str(exc)}
+        return {
+            "ok": True,
+            "available": result.available,
+            "current_version": result.current_version,
+            "remote_version": result.remote_version,
+            "url": result.url,
+            "sha256": result.sha256,
+            "notes": result.notes,
+            "message": result.message,
+        }
+
+    def apply_update(self, on_progress=None):
+        return self._run(self._apply_update(on_progress))
+
+    async def _apply_update(self, on_progress=None) -> dict[str, Any]:
+        from agent.updater import UpdateError, apply_update
+
+        settings = get_settings()
+        feed = settings.config.update.feed_url
+        try:
+            result = await asyncio.to_thread(apply_update, feed, on_progress)
+        except UpdateError as exc:
+            return {"ok": False, "error": str(exc)}
+        return {
+            "ok": True,
+            "available": result.available,
+            "current_version": result.current_version,
+            "remote_version": result.remote_version,
+            "message": result.message,
+            "notes": result.notes,
+            "restarting": result.available,
+        }
 
     # --- discovery / services ---
 

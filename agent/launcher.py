@@ -29,20 +29,17 @@ def _ensure_single_instance() -> bool:
 
 
 def _setup_logging() -> None:
-    handlers: list[logging.Handler] = []
-    if is_frozen():
-        log_dir = get_log_dir()
-        log_dir.mkdir(parents=True, exist_ok=True)
-        handlers.append(
-            RotatingFileHandler(
-                log_dir / "agent.log",
-                maxBytes=5 * 1024 * 1024,
-                backupCount=3,
-                encoding="utf-8",
-            )
-        )
-    else:
-        handlers.append(logging.StreamHandler(sys.stdout))
+    log_dir = get_log_dir()
+    log_dir.mkdir(parents=True, exist_ok=True)
+    handlers: list[logging.Handler] = [
+        RotatingFileHandler(
+            log_dir / "agent.log",
+            maxBytes=5 * 1024 * 1024,
+            backupCount=3,
+            encoding="utf-8",
+        ),
+        logging.StreamHandler(sys.stdout),
+    ]
 
     logging.basicConfig(
         level=logging.INFO,

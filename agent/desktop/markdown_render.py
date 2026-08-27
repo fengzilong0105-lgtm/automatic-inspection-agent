@@ -213,8 +213,8 @@ def format_user_message(text: str) -> str:
         '<table width="100%" cellspacing="0" cellpadding="0" style="margin:10px 0;">'
         "<tr><td align=\"right\">"
         '<table cellspacing="0" cellpadding="0"><tr>'
-        '<td style="background-color:#E6F4FF;border:1px solid #91CAFF;border-radius:10px;'
-        'border-top-right-radius:2px;padding:8px 14px;color:#262626;font-size:13px;'
+        '<td style="background-color:#1890FF;border:1px solid #1890FF;border-radius:12px;'
+        'border-top-right-radius:4px;padding:10px 14px;color:#FFFFFF;font-size:13px;'
         'line-height:1.6;max-width:520px;">'
         f"{escaped}</td></tr></table></td></tr></table>"
     )
@@ -279,9 +279,9 @@ def format_assistant_message(text: str) -> str:
         "</td>"
         '<td valign="top">'
         '<table cellspacing="0" cellpadding="0" width="100%"><tr>'
-        '<td style="background-color:#FFFFFF;border:1px solid #E8ECF0;border-radius:10px;'
-        'border-top-left-radius:2px;padding:10px 14px;color:#262626;font-size:13px;'
-        'line-height:1.6;">'
+        '<td style="background-color:#FFFFFF;border:1px solid #E8ECF0;border-radius:12px;'
+        'border-top-left-radius:4px;padding:12px 14px;color:#262626;font-size:13px;'
+        'line-height:1.65;">'
         f"{body}</td></tr></table></td></tr></table>"
     )
 

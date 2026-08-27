@@ -1,6 +1,6 @@
 [project]
 name = "automatic-inspection-agent"
-version = "0.2.0"
+version = "0.3.2"
 description = "Project-level service inspection AI agent (Windows jumpbox + SSH Linux)"
 readme = "README.md"
 license = "MIT"

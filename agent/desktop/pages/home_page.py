@@ -52,7 +52,7 @@ class HomePage(QWidget):
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(12, 12, 12, 12)
-        layout.setSpacing(0)
+        layout.setSpacing(12)
 
         self.stack = QStackedWidget()
         self.overview = self._build_overview()
@@ -74,7 +74,7 @@ class HomePage(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(10)
 
-        summary_card = Card(padding=8)
+        summary_card = Card(padding=10)
         summary_layout = summary_card.content_layout
         summary_layout.setSpacing(6)
 
@@ -85,9 +85,9 @@ class HomePage(QWidget):
         self.host_hint.setObjectName("serviceStripTitle")
         row.addWidget(self.host_hint)
 
-        self.chip_ok = _ServiceChip("正常 0", accent="success")
-        self.chip_bad = _ServiceChip("异常 0", accent="danger")
-        self.chip_disabled = _ServiceChip("停用 0")
+        self.chip_ok = _ServiceChip("● 正常 0", accent="success")
+        self.chip_bad = _ServiceChip("● 异常 0", accent="danger")
+        self.chip_disabled = _ServiceChip("● 停用 0")
         self.chip_ok.clicked.connect(lambda: self._open_service_list("ok"))
         self.chip_bad.clicked.connect(lambda: self._open_service_list("bad"))
         self.chip_disabled.clicked.connect(lambda: self._open_service_list("disabled"))
@@ -99,18 +99,18 @@ class HomePage(QWidget):
         self.status_label.setObjectName("fieldLabel")
         row.addWidget(self.status_label, 1)
 
-        self.incidents_btn = QPushButton("告警")
+        self.incidents_btn = QPushButton("查看告警")
         self.incidents_btn.setObjectName("alertButtonCompact")
         self.incidents_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.incidents_btn.clicked.connect(self.go_incidents.emit)
         row.addWidget(self.incidents_btn)
         summary_layout.addLayout(row)
-        layout.addWidget(summary_card)
 
         self.metrics_bar = HostMetricsBar(self.service)
-        layout.addWidget(self.metrics_bar)
+        summary_layout.addWidget(self.metrics_bar)
+        layout.addWidget(summary_card)
 
-        chat_card = Card()
+        chat_card = Card(padding=12)
         self.chat_panel = ChatPanel(self.service)
         chat_card.content_layout.addWidget(self.chat_panel)
         layout.addWidget(chat_card, 1)
@@ -154,9 +154,9 @@ class HomePage(QWidget):
 
     def clear_summary(self, message: str = "") -> None:
         self.summary = []
-        self.chip_ok.setText("正常 0")
-        self.chip_bad.setText("异常 0")
-        self.chip_disabled.setText("停用 0")
+        self.chip_ok.setText("● 正常 0")
+        self.chip_bad.setText("● 异常 0")
+        self.chip_disabled.setText("● 停用 0")
         self.status_label.setText(message or "暂无服务")
 
     def refresh(self) -> None:
@@ -242,9 +242,9 @@ class HomePage(QWidget):
             if not item.get("disabled") and item.get("status", {}).get("running") is None
         )
         total = len(self.summary)
-        self.chip_ok.setText(f"正常 {ok}")
-        self.chip_bad.setText(f"异常 {bad}")
-        self.chip_disabled.setText(f"停用 {disabled}")
+        self.chip_ok.setText(f"● 正常 {ok}")
+        self.chip_bad.setText(f"● 异常 {bad}")
+        self.chip_disabled.setText(f"● 停用 {disabled}")
         self.chip_bad.set_accent("danger" if bad else "default")
         parts = [f"共 {total} 个"]
         if disabled:

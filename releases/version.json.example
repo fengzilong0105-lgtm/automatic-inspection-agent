@@ -1,0 +1,6 @@
+{
+  "version": "0.2.0",
+  "url": "http://106.120.201.126:14828/down/steadyOps/SteadyOps-Setup-0.2.0.exe",
+  "sha256": "由 build.ps1 -Installer 自动写入，勿手填占位符",
+  "notes": "SteadyOps 0.2.0"
+}

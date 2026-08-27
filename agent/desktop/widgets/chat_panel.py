@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from PySide6.QtCore import QObject, QTimer, Signal
-from PySide6.QtGui import QTextCursor
+from PySide6.QtCore import QObject, Qt, QTimer, Signal, QSize
+from PySide6.QtGui import QBrush, QColor, QFont, QFontMetrics, QPainter, QPen, QTextCursor
 from PySide6.QtWidgets import (
     QComboBox,
     QFrame,
@@ -9,6 +9,8 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QPushButton,
+    QSizePolicy,
+    QStyle,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -29,6 +31,57 @@ class _StreamEventBridge(QObject):
     """Thread-safe bridge from background runtime to Qt UI."""
 
     event = Signal(object)
+
+
+_USAGE_PILL_STYLES: dict[str, tuple[str, str, str]] = {
+    "ok": ("#F6FFED", "#B7EB8F", "#389E0D"),
+    "warn": ("#FFFBE6", "#FFE58F", "#D48806"),
+    "danger": ("#FFF2F0", "#FFCCC7", "#CF1322"),
+}
+
+
+class _UsagePill(QWidget):
+    """Usage badge drawn with QPainter — QSS border-radius fails on Windows."""
+
+    _RADIUS = 12
+    _PAD_X = 10
+    _HEIGHT = 26
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._level = "ok"
+        self._text = "● 上下文 --"
+        self.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+        self.setFixedHeight(self._HEIGHT)
+
+    def set_text(self, text: str) -> None:
+        self._text = text
+        self.updateGeometry()
+        self.update()
+
+    def set_level(self, level: str) -> None:
+        self._level = level if level in _USAGE_PILL_STYLES else "ok"
+        self.update()
+
+    def sizeHint(self) -> QSize:
+        fm = QFontMetrics(self.font())
+        text_w = fm.horizontalAdvance(self._text)
+        return QSize(text_w + self._PAD_X * 2, self._HEIGHT)
+
+    def paintEvent(self, _event) -> None:
+        bg, border, fg = _USAGE_PILL_STYLES.get(self._level, _USAGE_PILL_STYLES["ok"])
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        rect = self.rect().adjusted(1, 1, -2, -2)
+        painter.setBrush(QBrush(QColor(bg)))
+        painter.setPen(QPen(QColor(border), 1))
+        painter.drawRoundedRect(rect, self._RADIUS, self._RADIUS)
+        painter.setPen(QColor(fg))
+        font = painter.font()
+        font.setWeight(QFont.Weight.Medium)
+        font.setPointSize(8)
+        painter.setFont(font)
+        painter.drawText(rect, int(Qt.AlignmentFlag.AlignCenter), self._text)
 
 
 class ChatPanel(QWidget):
@@ -56,23 +109,49 @@ class ChatPanel(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(8)
 
-        head = QHBoxLayout()
-        title = QLabel("对话运维")
-        title.setObjectName("sectionTitle")
+        head_frame = QFrame()
+        head_frame.setObjectName("chatPanelHeader")
+        head = QHBoxLayout(head_frame)
+        head.setContentsMargins(0, 0, 0, 0)
+        head.setSpacing(6)
+
+        head_title = QLabel("对话运维")
+        head_title.setObjectName("chatHeadTitle")
+
         self.conversation_combo = QComboBox()
-        self.conversation_combo.setMinimumWidth(180)
-        self.new_conv_btn = QPushButton("新建对话")
-        self.new_conv_btn.setObjectName("secondaryButton")
-        self.usage_label = QLabel("上下文 --")
-        self.usage_label.setObjectName("mutedText")
+        self.conversation_combo.setObjectName("chatConvCombo")
+        self.conversation_combo.setMinimumWidth(240)
+        self.conversation_combo.setSizeAdjustPolicy(
+            QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
+        )
+        self.conversation_combo.setSizePolicy(
+            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed
+        )
+
+        head.addWidget(head_title, 0, Qt.AlignmentFlag.AlignVCenter)
+        head.addWidget(self.conversation_combo, 0, Qt.AlignmentFlag.AlignVCenter)
+        head.addStretch(1)
+
+        tools = QHBoxLayout()
+        tools.setSpacing(6)
+
+        self.usage_pill = _UsagePill()
+
+        self.new_conv_btn = QPushButton("+ 新建对话")
+        self.new_conv_btn.setObjectName("chatToolbarButton")
+        self.new_conv_btn.setProperty("buttonRole", "new")
+
         self.clear_btn = QPushButton("清空对话")
-        self.clear_btn.setObjectName("secondaryButton")
-        head.addWidget(title)
-        head.addWidget(self.conversation_combo, 1)
-        head.addWidget(self.new_conv_btn)
-        head.addWidget(self.usage_label)
-        head.addWidget(self.clear_btn)
-        layout.addLayout(head)
+        self.clear_btn.setObjectName("chatToolbarButton")
+        self.clear_btn.setProperty("buttonRole", "clear")
+        self.clear_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_TrashIcon))
+        self.clear_btn.setIconSize(QSize(12, 12))
+
+        tools.addWidget(self.usage_pill, 0, Qt.AlignmentFlag.AlignVCenter)
+        tools.addWidget(self.new_conv_btn, 0, Qt.AlignmentFlag.AlignVCenter)
+        tools.addWidget(self.clear_btn, 0, Qt.AlignmentFlag.AlignVCenter)
+        head.addLayout(tools)
+        layout.addWidget(head_frame)
 
         self.history = QTextEdit()
         self.history.setObjectName("chatHistory")
@@ -81,25 +160,66 @@ class ChatPanel(QWidget):
 
         self.confirm_frame = QFrame()
         self.confirm_frame.setObjectName("confirmBanner")
-        confirm_layout = QHBoxLayout(self.confirm_frame)
-        confirm_layout.setContentsMargins(12, 8, 12, 8)
+        confirm_layout = QVBoxLayout(self.confirm_frame)
+        confirm_layout.setContentsMargins(16, 14, 16, 14)
+        confirm_layout.setSpacing(10)
+
+        title_row = QHBoxLayout()
+        title_row.setSpacing(8)
+        self.confirm_icon = QLabel("⚠")
+        self.confirm_icon.setObjectName("confirmTitle")
+        title_col = QVBoxLayout()
+        title_col.setSpacing(2)
+        self.confirm_title = QLabel("待确认操作")
+        self.confirm_title.setObjectName("confirmTitle")
+        self.confirm_subtitle = QLabel("Agent 需要您的确认才会继续执行")
+        self.confirm_subtitle.setObjectName("confirmSubtitle")
+        title_col.addWidget(self.confirm_title)
+        title_col.addWidget(self.confirm_subtitle)
+        title_row.addWidget(self.confirm_icon, 0, Qt.AlignmentFlag.AlignTop)
+        title_row.addLayout(title_col, 1)
+        confirm_layout.addLayout(title_row)
+
         self.confirm_label = QLabel("")
+        self.confirm_label.setObjectName("confirmDetail")
+        self.confirm_label.setWordWrap(True)
+        confirm_layout.addWidget(self.confirm_label)
+
+        self.confirm_command = QLabel("")
+        self.confirm_command.setObjectName("confirmCommand")
+        self.confirm_command.setWordWrap(True)
+        self.confirm_command.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        self.confirm_command.hide()
+        confirm_layout.addWidget(self.confirm_command)
+
+        self.confirm_host = QLabel("")
+        self.confirm_host.setObjectName("confirmHost")
+        self.confirm_host.hide()
+        confirm_layout.addWidget(self.confirm_host)
+
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(10)
+        self.cancel_btn = QPushButton("拒绝")
+        self.cancel_btn.setObjectName("confirmRejectButton")
         self.confirm_btn = QPushButton("确认执行")
-        self.confirm_btn.setObjectName("primaryButton")
-        self.cancel_btn = QPushButton("取消")
-        self.cancel_btn.setObjectName("secondaryButton")
+        self.confirm_btn.setObjectName("confirmAcceptButton")
         self.confirm_btn.hide()
         self.cancel_btn.hide()
-        confirm_layout.addWidget(self.confirm_label, 1)
-        confirm_layout.addWidget(self.confirm_btn)
-        confirm_layout.addWidget(self.cancel_btn)
+        btn_row.addWidget(self.cancel_btn)
+        btn_row.addStretch()
+        btn_row.addWidget(self.confirm_btn)
+        confirm_layout.addLayout(btn_row)
         self.confirm_frame.hide()
 
         input_row = QHBoxLayout()
+        input_row.setSpacing(10)
         self.input = QLineEdit()
-        self.input.setPlaceholderText("输入消息，Enter 发送")
+        self.input.setObjectName("chatInput")
+        self.input.setPlaceholderText("请输入问题… Enter 发送")
         self.send_btn = QPushButton("发送")
-        self.send_btn.setObjectName("primaryButton")
+        self.send_btn.setObjectName("chatSendButton")
         input_row.addWidget(self.input, 1)
         input_row.addWidget(self.send_btn)
 
@@ -246,18 +366,35 @@ class ChatPanel(QWidget):
 
     def _set_usage(self, usage: dict | None) -> None:
         if not usage:
-            self.usage_label.setText("上下文 --")
+            self.usage_pill.set_text("● 上下文 --")
+            level = "ok"
+        else:
+            percent = usage.get("percent", 0)
+            text = (
+                f"● 上下文 {usage.get('used_label', usage.get('used'))} / "
+                f"{usage.get('limit_label', usage.get('limit'))} {percent}%"
+            )
+            hint = usage.get("hint") or ""
+            if hint:
+                text += f" · {hint}"
+            self.usage_pill.set_text(text.strip())
+            level = usage.get("level") or "ok"
+            if percent >= 85:
+                level = "danger"
+            elif percent >= 70:
+                level = "warn"
+        self.usage_pill.set_level(level)
+
+    def _fit_conversation_combo_width(self) -> None:
+        combo = self.conversation_combo
+        if combo.count() == 0:
             return
-        icon = usage.get("level_icon") or ""
-        hint = usage.get("hint") or ""
-        text = (
-            f"{icon} 上下文 {usage.get('used_label', usage.get('used'))} / "
-            f"{usage.get('limit_label', usage.get('limit'))} "
-            f"({usage.get('percent', 0)}%)"
-        )
-        if hint:
-            text += f" · {hint}"
-        self.usage_label.setText(text.strip())
+        fm = QFontMetrics(combo.font())
+        max_text = 0
+        for i in range(combo.count()):
+            max_text = max(max_text, fm.horizontalAdvance(combo.itemText(i)))
+        width = max_text + 48
+        combo.setMinimumWidth(max(240, min(width, 480)))
 
     def _apply_workspace(self, payload: dict) -> None:
         conv = payload.get("conversation") or {}
@@ -271,6 +408,8 @@ class ChatPanel(QWidget):
             if item.get("id") == self.conversation_id:
                 active_index = idx
         self.conversation_combo.setCurrentIndex(active_index)
+        self.conversation_combo.setVisible(bool(conversations))
+        self._fit_conversation_combo_width()
         self._switching_conversation = False
         self._render_messages(payload.get("messages", []))
         self._set_usage(payload.get("usage"))
@@ -384,6 +523,8 @@ class ChatPanel(QWidget):
     def _begin_confirm(self, payload: dict) -> None:
         self._confirm_token += 1
         self._confirming = {**payload, "_token": self._confirm_token}
+        self.confirm_title.setText("执行中")
+        self.confirm_subtitle.setText("正在执行已确认的操作，请稍候…")
         self.confirm_label.setText("正在执行已确认的操作，请稍候…")
         self.confirm_btn.setText("执行中…")
         self.confirm_btn.setEnabled(False)
@@ -397,8 +538,59 @@ class ChatPanel(QWidget):
         if not self._confirming:
             return
         self.confirm_label.setText(
-            "执行时间较长，仍在等待远端结果…可点「取消」结束等待（远端命令可能仍在跑）"
+            "执行时间较长，仍在等待远端结果…可点「拒绝」结束等待（远端命令可能仍在跑）"
         )
+        self.confirm_subtitle.setText("执行时间较长，请稍候")
+
+    def _show_confirm_card(
+        self,
+        *,
+        detail: str,
+        command: str = "",
+        host: str = "",
+        accept_label: str = "确认执行",
+        title: str = "待确认操作",
+        subtitle: str = "Agent 需要您的确认才会继续执行",
+    ) -> None:
+        self.confirm_title.setText(title)
+        self.confirm_subtitle.setText(subtitle)
+        self.confirm_label.setText(detail)
+        self.confirm_label.setVisible(bool(detail))
+        cmd = (command or "").strip()
+        if cmd:
+            if not cmd.startswith("$"):
+                cmd = f"$ {cmd}"
+            self.confirm_command.setText(cmd)
+            self.confirm_command.show()
+        else:
+            self.confirm_command.clear()
+            self.confirm_command.hide()
+        if host:
+            self.confirm_host.setText(f"目标主机：{host}")
+            self.confirm_host.show()
+        else:
+            self.confirm_host.clear()
+            self.confirm_host.hide()
+        self.confirm_btn.setText(accept_label)
+        self.confirm_btn.setEnabled(True)
+        self.cancel_btn.setEnabled(True)
+        self.confirm_frame.show()
+        self.confirm_btn.show()
+        self.cancel_btn.show()
+
+    def _resolve_confirm_host(self) -> str:
+        try:
+            from agent.settings import get_settings
+
+            cfg = get_settings().config
+            host_id = cfg.active_host_id or ""
+            for item in cfg.hosts or []:
+                if item.id == host_id:
+                    ssh_host = getattr(getattr(item, "ssh", None), "host", None) or ""
+                    return ssh_host or item.name or host_id
+            return str(host_id)
+        except Exception:
+            return ""
 
     def _cancel_confirm(self) -> None:
         """取消待确认，并丢弃后端挂起项，避免下轮对话再次弹出。"""
@@ -539,10 +731,12 @@ class ChatPanel(QWidget):
             self.pending_restart = {"service_id": result.get("service_id", "")}
             self.pending_write = None
             self._append_assistant(result.get("message", "确认重启？"))
-            self.confirm_label.setText(f"待确认：重启服务 {self.pending_restart['service_id']}")
-            self.confirm_frame.show()
-            self.confirm_btn.show()
-            self.cancel_btn.show()
+            sid = self.pending_restart["service_id"]
+            self._show_confirm_card(
+                detail=f"即将重启服务：{sid}",
+                command=f"systemctl restart {sid}" if sid else "",
+                host=self._resolve_confirm_host(),
+            )
             return
         if msg_type == "error":
             self._cancel_stream()
@@ -582,13 +776,14 @@ class ChatPanel(QWidget):
             self.pending_memory = suggestions[0]
             self.pending_restart = None
             mem = self.pending_memory
-            self.confirm_label.setText(
-                f"待确认记忆：[{mem.get('category')}] {mem.get('key')}: {mem.get('value')}"
+            self._show_confirm_card(
+                detail=(
+                    f"建议记住：[{mem.get('category')}] {mem.get('key')}: {mem.get('value')}"
+                ),
+                accept_label="记住这条",
+                title="待确认记忆",
+                subtitle="确认后将写入本地知识库",
             )
-            self.confirm_btn.setText("记住这条")
-            self.confirm_frame.show()
-            self.confirm_btn.show()
-            self.cancel_btn.show()
             self._mode = "chat"
             return
 
@@ -601,21 +796,25 @@ class ChatPanel(QWidget):
         if self._confirming:
             return
         action = data.get("action") or "write"
+        command = ""
         if action == "command":
             preview = (data.get("command") or data.get("content_preview") or "").strip()
-            if len(preview) > 80:
-                preview = preview[:80] + "…"
-            self.confirm_label.setText(f"待确认：执行命令 {preview}")
+            command = preview
+            detail = "即将在远端执行以下命令，请确认后继续。"
         elif action == "delete":
-            self.confirm_label.setText(f"待确认：删除 {data.get('path') or ''}")
+            path = data.get("path") or ""
+            detail = f"即将删除文件：{path}"
+            command = f"rm {path}" if path else ""
         else:
-            self.confirm_label.setText(f"待确认：写入 {data.get('path') or ''}")
-        self.confirm_btn.setText("确认执行")
-        self.confirm_btn.setEnabled(True)
-        self.cancel_btn.setEnabled(True)
-        self.confirm_frame.show()
-        self.confirm_btn.show()
-        self.cancel_btn.show()
+            path = data.get("path") or ""
+            detail = f"即将写入文件：{path}"
+            command = (data.get("content_preview") or "").strip()
+        self._show_confirm_card(
+            detail=detail,
+            command=command,
+            host=self._resolve_confirm_host(),
+            accept_label="确认执行",
+        )
 
     def _on_pending_op(self, data: dict) -> None:
         if self._confirming:
@@ -633,6 +832,12 @@ class ChatPanel(QWidget):
         self.pending_write = None
         self.pending_memory = None
         self.confirm_label.setText("")
+        self.confirm_command.clear()
+        self.confirm_command.hide()
+        self.confirm_host.clear()
+        self.confirm_host.hide()
+        self.confirm_title.setText("待确认操作")
+        self.confirm_subtitle.setText("Agent 需要您的确认才会继续执行")
         self.confirm_btn.setText("确认执行")
         self.confirm_btn.setEnabled(True)
         self.cancel_btn.setEnabled(True)

@@ -34,7 +34,7 @@ class IncidentsPage(QWidget):
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(12, 12, 12, 12)
-        layout.setSpacing(12)
+        layout.setSpacing(14)
 
         summary_row = QHBoxLayout()
         summary_row.setSpacing(12)

@@ -33,7 +33,7 @@
 
 | 形态 | 入口 | 适用对象 |
 |------|------|----------|
-| **桌面应用（推荐）** | `SteadyOps.exe` 或 `python -m agent.launcher` | 运维人员日常使用 |
+| **桌面应用（推荐）** | 安装包 `SteadyOps-Setup-*.exe`，或开发态 `python -m agent.launcher` | 运维人员日常使用 |
 | **Web 控制台** | `http://localhost:8765` 或 `python -m agent.main` | 开发调试、浏览器访问 |
 | **飞书机器人** | 配置飞书应用后接入 | 告警通知与群内指令 |
 
@@ -111,25 +111,100 @@ ollama pull qwen2.5
 # 或 minimax-m3:cloud 等你实际使用的模型
 ```
 
-### 方式二：桌面 exe（免 Python 环境）
+### 方式二：桌面安装包（免 Python 环境）
 
 开发者在本机构建：
 
 ```powershell
 pip install -e ".[build]"
-.\scripts\build.ps1
-# 产物：dist\SteadyOps.exe
+.\scripts\build.ps1              # 产出 dist\SteadyOps\（onedir）
+.\scripts\build.ps1 -Installer   # 再打出 dist\SteadyOps-Setup-x.y.z.exe（需安装 Inno Setup 6）
 ```
 
-使用者双击 `SteadyOps.exe` 即可运行，无需安装 Python。大模型若选 Ollama，仍需用户自行安装 Ollama。
+- 目录包：可直接运行 `dist\SteadyOps\SteadyOps.exe` 做本地验证  
+- 安装包：发给用户双击安装；默认装到 `%LOCALAPPDATA%\Programs\SteadyOps\`，无需管理员权限  
+- 大模型若选 Ollama，仍需用户自行安装 Ollama  
 
-| 数据 | 路径（打包版） |
+| 数据 | 路径（打包 / 安装版） |
 |------|----------------|
 | 配置文件 | `%APPDATA%\SteadyOps\data\config.yaml` |
 | 告警数据库 | `%APPDATA%\SteadyOps\data\agent.db` |
 | 运行日志 | `%APPDATA%\SteadyOps\logs\agent.log` |
 
 开发模式数据存放在项目目录 `data/` 下。
+
+### 在线发布与自动更新
+
+桌面安装版支持 **方案 B：自研在线更新**——客户端读取 `version.json`，下载 Setup 安装包，校验 SHA256 后静默升级。升级只覆盖程序目录，**不会动** `%APPDATA%\SteadyOps\` 下的配置与数据。
+
+#### 1. 服务器放什么
+
+在可 HTTP 访问的目录下放置两个文件（示例为当前内网映射）：
+
+| 服务器路径 | 下载 URL |
+|------------|----------|
+| `/DATA1/download/steadyOps/SteadyOps-Setup-x.y.z.exe` | `http://106.120.201.126:14828/down/steadyOps/SteadyOps-Setup-x.y.z.exe` |
+| `/DATA1/download/steadyOps/version.json` | `http://106.120.201.126:14828/down/steadyOps/version.json` |
+
+规则：`http://106.120.201.126:14828/down/xxx` → 服务器 `/DATA1/download/xxx`。
+
+`version.json` 由打包脚本自动生成，格式示例：
+
+```json
+{
+  "version": "0.3.0",
+  "url": "http://106.120.201.126:14828/down/steadyOps/SteadyOps-Setup-0.3.0.exe",
+  "sha256": "安装包 SHA256（小写十六进制，脚本自动写入）",
+  "notes": "本次更新说明"
+}
+```
+
+#### 2. 开发者发版（打包 + 生成 version.json）
+
+```powershell
+# 1. 先改 pyproject.toml 里的 version
+
+# 2. 打安装包（默认下载根：106.120.201.126:14828/down/steadyOps）
+.\scripts\build.ps1 -Installer
+
+# 自定义下载根 / 更新说明
+.\scripts\build.ps1 -Installer `
+  -UpdateBaseUrl "http://106.120.201.126:14828/down/steadyOps" `
+  -ReleaseNotes "修复告警时间显示"
+```
+
+也可设置环境变量 `STEADYOPS_UPDATE_BASE_URL`（不要末尾 `/`）。
+
+成功后产出：
+
+- `dist\SteadyOps-Setup-x.y.z.exe`
+- `dist\version.json`（含 version / url / sha256 / notes）
+- `releases\version.json`（同内容副本）
+
+**无需手动 `Get-FileHash`**，将 Setup 与 `dist\version.json` 上传到服务器目录即可。
+
+#### 3. 客户端如何更新
+
+已安装用户：**设置 → 在线更新**：
+
+| 配置项 | 示例 |
+|--------|------|
+| 版本源 URL | `http://106.120.201.126:14828/down/steadyOps/version.json` |
+| 启用在线更新检查 | 勾选 |
+| 启动时自动检查 | 勾选（可选） |
+
+操作：**检查更新** → **下载并安装**。配置写入 `%APPDATA%\SteadyOps\data\config.yaml` 的 `update:` 段。
+
+发版前建议用浏览器自检：能打开 `version.json`，且 Setup 链接可下载。
+
+#### 4. 发版检查清单
+
+1. bump `pyproject.toml` 的 `version`
+2. `.\scripts\build.ps1 -Installer`（可选 `-ReleaseNotes`）
+3. 上传 `dist\SteadyOps-Setup-*.exe` 与 `dist\version.json` 到下载目录
+4. 用旧版客户端验证能检出并升级，且配置仍在
+
+更多细节见 [releases/README.md](releases/README.md)、[桌面端交付形态改造方案](docs/desktop-delivery-roadmap.md)。
 
 ### 部署检查清单
 
@@ -423,10 +498,12 @@ agent/
 | 大模型 | Ollama / OpenAI 兼容 API |
 | 远程执行 | asyncssh |
 | 存储 | SQLite（aiosqlite）+ YAML 配置 |
-| 打包 | PyInstaller |
+| 打包 | PyInstaller（onedir）+ Inno Setup |
 
 ### 相关文档
 
+- [桌面端交付形态改造方案](docs/desktop-delivery-roadmap.md)
+- [发布通道与在线更新](releases/README.md)
 - [飞书机器人接入](docs/feishu-bot-setup.md)
 - [问题报告与飞书工单工作流](docs/ops-report-workflow.md)
 - [上下文管理机制](docs/context-management.md)

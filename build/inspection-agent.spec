@@ -1,5 +1,11 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""PyInstaller spec — desktop app (PySide6). Run: pyinstaller build/inspection-agent.spec"""
+"""PyInstaller spec — desktop app (PySide6), onedir layout.
+
+Run: pyinstaller build/inspection-agent.spec
+
+Output: dist/SteadyOps/SteadyOps.exe + dist/SteadyOps/_internal/
+(Use Inno Setup to wrap this folder into SteadyOps-Setup-x.y.z.exe.)
+"""
 
 import os
 
@@ -26,6 +32,9 @@ hiddenimports = [
     "agent.langchain.chat_graph",
     "agent.langchain.tools",
     "agent.langchain.llm_factory",
+    "agent.updater",
+    "agent.updater.service",
+    "agent.version",
     "asyncssh",
     "PySide6",
     "PySide6.QtCore",
@@ -72,17 +81,13 @@ pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 exe = EXE(
     pyz,
     a.scripts,
-    a.binaries,
-    a.zipfiles,
-    a.datas,
     [],
+    exclude_binaries=True,
     name="SteadyOps",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
-    upx_exclude=[],
-    runtime_tmpdir=None,
+    upx=False,
     console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
@@ -90,4 +95,15 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     icon=icon_path if os.path.isfile(icon_path) else None,
+)
+
+coll = COLLECT(
+    exe,
+    a.binaries,
+    a.zipfiles,
+    a.datas,
+    strip=False,
+    upx=False,
+    upx_exclude=[],
+    name="SteadyOps",
 )

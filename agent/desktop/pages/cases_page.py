@@ -22,7 +22,13 @@ from agent.desktop.formatters import (
 )
 from agent.desktop.pages.case_editor_page import CaseEditorPage
 from agent.desktop.widgets.card import Card
-from agent.desktop.widgets.table_cells import make_badge, make_text_item
+from agent.desktop.widgets.table_cells import (
+    TABLE_ACTION_ROW_HEIGHT,
+    make_badge,
+    make_table_action_button,
+    make_table_action_cell,
+    make_text_item,
+)
 from agent.services.agent_service import AgentService
 
 
@@ -80,7 +86,7 @@ class CasesPage(QWidget):
         self.table.setShowGrid(True)
         self.table.setWordWrap(False)
         self.table.verticalHeader().setVisible(False)
-        self.table.verticalHeader().setDefaultSectionSize(46)
+        self.table.verticalHeader().setDefaultSectionSize(TABLE_ACTION_ROW_HEIGHT)
         self.table.setHorizontalHeaderLabels(
             ["更新时间", "标题", "服务", "级别", "状态", "负责人", "发起人", "操作"]
         )
@@ -101,7 +107,8 @@ class CasesPage(QWidget):
         header_view.setSectionResizeMode(7, QHeaderView.ResizeMode.Fixed)
         self.table.setColumnWidth(3, 72)
         self.table.setColumnWidth(4, 96)
-        self.table.setColumnWidth(7, 100)
+        # 操作列固定宽度，避免「报告编辑」被 Stretch 列挤裁切
+        self.table.setColumnWidth(7, 120)
 
         list_card.content_layout.setSpacing(0)
         list_card.content_layout.addWidget(list_header)
@@ -166,18 +173,15 @@ class CasesPage(QWidget):
             self.table.setItem(row, 5, make_text_item(assignee, tooltip=assignee))
             self.table.setItem(row, 6, make_text_item(initiator, tooltip=initiator))
 
-            actions = QWidget()
-            actions_layout = QHBoxLayout(actions)
-            actions_layout.setContentsMargins(4, 2, 4, 2)
-            actions_layout.setSpacing(0)
-            edit_btn = QPushButton("报告编辑")
-            edit_btn.setObjectName("tableActionButton")
-            edit_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            edit_btn.clicked.connect(lambda _checked=False, cid=case_id: self._open_editor(cid))
-            actions_layout.addWidget(edit_btn)
-            self.table.setCellWidget(row, 7, actions)
+            edit_btn = make_table_action_button(
+                "报告编辑",
+                on_click=lambda _checked=False, cid=case_id: self._open_editor(cid),
+            )
+            self.table.setRowHeight(row, TABLE_ACTION_ROW_HEIGHT)
+            self.table.setCellWidget(row, 7, make_table_action_cell(edit_btn))
 
         self.table.resizeColumnToContents(0)
+        self.table.setColumnWidth(7, 120)
         self._pending_open_id = None
 
         if open_id:
